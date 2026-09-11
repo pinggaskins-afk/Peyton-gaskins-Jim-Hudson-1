@@ -2,17 +2,20 @@
 
 Personal vehicle inventory website for Peyton Gaskins at Jim Hudson Cadillac / Buick GMC.
 
-## What this version does
+## Current version
 
-- Uses both Jim Hudson Cadillac and Jim Hudson Buick GMC inventory sitemaps so every discovered vehicle can appear.
-- Pulls vehicle-card details in bulk from the new and used inventory pages.
-- Shows a short customer-facing vehicle name in the format: Year + Make + Model + Trim.
-- Removes drivetrain/body wording such as Front Wheel Drive, All Wheel Drive, Four Wheel Drive, Crew Cab, Sport Utility, and similar extra wording from the visible title.
-- Shows price, mileage, VIN and an available dealership photo on each card when those details are available.
-- Keeps stock numbers searchable and includes them in the prefilled text message without cluttering the card.
-- If a visible vehicle is still missing price, photo, stock or used-vehicle mileage, the site automatically checks that exact dealer detail page in the background and updates the card.
-- Makes Call Peyton and Text Peyton the main actions. The original dealership listing is a smaller secondary link.
-- Keeps the previously requested CarBravo and Cadillac Certified Pre-Owned warranty wording.
+Version: `2026-09-11-photo-price-fix-2`
+
+This build fixes the two live-data problems from the prior deployment:
+
+- Vehicle photos now recognize Jim Hudson's current dealership-hosted gallery URLs under `/det-content/uploads/stock-images/`, as well as the older vehicle-image hosts.
+- Current price and mileage are read from Jim Hudson's lightweight `/llm/inventory/` feed and merged by VIN. A vehicle detail page is still checked in the background for gallery photos, stock number, and stronger dealer price labels such as Jim Hudson Price or Internet Price.
+- JSON-LD gallery images and stock/SKU data are also parsed from vehicle detail pages as a fallback.
+- Pre-owned inventory is restricted to stock numbers beginning with `JB` followed by numbers or `B` followed by numbers. Examples that qualify: `JB2238`, `B5788A`. Example that does not qualify: `BP2265A`.
+- New inventory remains brand-specific: Buick/GMC from Jim Hudson Buick GMC and Cadillac from Jim Hudson Cadillac.
+- Snapshot data is never used as a current price source.
+
+The `/health` endpoint returns the deployed version so you can confirm that the hosting service is running this build.
 
 ## Run locally
 
@@ -23,9 +26,11 @@ python app.py
 
 Then open `http://localhost:5000`.
 
-## Production
+## Production / Render
 
 The included Procfile runs the app with Gunicorn. The hosting service must allow outbound HTTPS requests to the Jim Hudson dealership websites because the inventory is live rather than hard-coded.
+
+After replacing the deployed code, trigger a new deploy/restart so the previous in-memory inventory cache is cleared.
 
 Useful optional environment variables:
 
@@ -34,7 +39,7 @@ Useful optional environment variables:
 - `INVENTORY_DIRECT_TIMEOUT` - sitemap request timeout; default 7 seconds.
 - `INVENTORY_READER_TIMEOUT` - fallback reader timeout; default 18 seconds.
 - `INVENTORY_DETAIL_TIMEOUT` - vehicle/list page request timeout; default 9 seconds.
-- `INVENTORY_MAX_LISTING_PAGES` - maximum inventory pages checked per feed; default 100.
+- `INVENTORY_MAX_LISTING_PAGES` - maximum inventory pages checked per listing feed; default 100.
 
 ## Contact shown on the website
 
