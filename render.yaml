@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: peyton-gaskins-auto
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.15"
+      - key: INVENTORY_CACHE_SECONDS
+        value: "1800"
+      - key: MAX_PAGES_PER_FEED
+        value: "100"
+      - key: INVENTORY_REQUEST_TIMEOUT
+        value: "18"
