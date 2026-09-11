@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import concurrent.futures
 import html as html_lib
+import json
 import os
 import re
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, Response, jsonify, render_template_string, request
 
 app = Flask(__name__, static_folder=None)
+SITE_VERSION = "2026-09-11-photo-price-fix-2"
 
 INDEX_HTML = '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n  <meta name="description" content="Browse new, certified pre-owned, and used vehicle inventory with Peyton Gaskins at Jim Hudson Cadillac / Buick GMC in Columbia, South Carolina.">\n  <title>Peyton Gaskins | Jim Hudson Cadillac / Buick GMC</title>\n  <link rel="preconnect" href="https://vehicle-images.carscommerce.inc">\n  <link rel="stylesheet" href="/assets/styles.css">\n</head>\n<body>\n  <header class="site-header">\n    <div class="shell nav-wrap">\n      <a class="brand" href="#top" aria-label="Peyton Gaskins inventory home">\n        <span class="brand-name">Peyton Gaskins</span>\n        <span class="brand-sub">Jim Hudson Cadillac / Buick GMC</span>\n      </a>\n      <div class="header-actions">\n        <a class="plain-link" href="#inventory">Inventory</a>\n        <a class="button button-primary compact" href="tel:{{ person.phone_tel }}">Call {{ person.phone_display }}</a>\n      </div>\n    </div>\n  </header>\n\n  <main id="top">\n    <section class="hero">\n      <div class="shell hero-grid">\n        <div>\n          <p class="eyebrow">Columbia, South Carolina</p>\n          <h1>Find the right vehicle. Work directly with Peyton.</h1>\n          <p class="hero-copy">Browse current vehicles with the essentials: price, mileage, VIN and available dealership photos. Call or text Peyton to confirm availability and schedule an appointment.</p>\n          <div class="hero-actions">\n            <a class="button button-primary" href="#inventory">Browse Inventory</a>\n            <a class="button button-secondary" href="sms:{{ person.phone_tel }}?body=Hi%20Peyton%2C%20I%27m%20interested%20in%20a%20vehicle%20I%20saw%20on%20your%20website.">Text Peyton</a>\n          </div>\n        </div>\n        <aside class="contact-card">\n          <p class="contact-name">{{ person.name }}</p>\n          <p>{{ person.title }}</p>\n          <p>{{ person.dealership }}</p>\n          <a class="phone" href="tel:{{ person.phone_tel }}">{{ person.phone_display }}</a>\n          <p class="contact-copy">Contact me directly for additional information, vehicle videos, pricing details, availability, or to schedule an appointment. Please ask for Peyton Gaskins when calling or visiting the dealership.</p>\n        </aside>\n      </div>\n    </section>\n\n    <section class="inventory-section" id="inventory">\n      <div class="shell">\n        <div class="section-heading">\n          <div>\n            <p class="eyebrow">Current Inventory</p>\n            <h2>New and Pre-Owned Vehicles</h2>\n          </div>\n          <p class="inventory-status" id="inventoryStatus">Loading current inventory...</p>\n        </div>\n\n        <div class="filters" aria-label="Inventory filters">\n          <label class="search-field">\n            <span>Search</span>\n            <input id="searchInput" type="search" placeholder="Year, make, model, stock or VIN" autocomplete="off">\n          </label>\n          <label>\n            <span>Type</span>\n            <select id="conditionFilter">\n              <option value="all">All Inventory</option>\n              <option value="new">New</option>\n              <option value="certified">Certified Pre-Owned</option>\n              <option value="preowned">Pre-Owned / Used</option>\n            </select>\n          </label>\n          <label>\n            <span>Make</span>\n            <select id="makeFilter"><option value="all">All Makes</option></select>\n          </label>\n          <label>\n            <span>Maximum Price</span>\n            <select id="priceFilter">\n              <option value="all">Any Price</option>\n              <option value="30000">$30,000</option>\n              <option value="40000">$40,000</option>\n              <option value="50000">$50,000</option>\n              <option value="60000">$60,000</option>\n              <option value="75000">$75,000</option>\n              <option value="100000">$100,000</option>\n            </select>\n          </label>\n          <label>\n            <span>Sort</span>\n            <select id="sortFilter">\n              <option value="recommended">Recommended</option>\n              <option value="price-low">Price: Low to High</option>\n              <option value="price-high">Price: High to Low</option>\n              <option value="year-new">Newest Year</option>\n              <option value="miles-low">Mileage: Low to High</option>\n            </select>\n          </label>\n        </div>\n\n        <div class="inventory-summary" id="inventorySummary"></div>\n        <div class="vehicle-grid" id="vehicleGrid" aria-live="polite"></div>\n        <div class="load-more-wrap hidden" id="loadMoreWrap"><button class="button button-secondary" type="button" id="loadMoreButton">Load More Vehicles</button></div>\n        <div class="empty-state hidden" id="emptyState">\n          <h3>No vehicles match those filters.</h3>\n          <p>Change your filters or contact Peyton directly for help finding a vehicle.</p>\n          <a class="button button-primary" href="tel:{{ person.phone_tel }}">Call {{ person.phone_display }}</a>\n        </div>\n      </div>\n    </section>\n\n    <section class="certification-section">\n      <div class="shell">\n        <div class="section-heading simple">\n          <div>\n            <p class="eyebrow">Certification</p>\n            <h2>Certified Pre-Owned Coverage</h2>\n          </div>\n        </div>\n        <div class="cert-grid">\n          <article>\n            <h3>CarBravo Certified Pre-Owned</h3>\n            <p>12-month / 12,000-mile warranty.</p>\n          </article>\n          <article>\n            <h3>Cadillac Certified Pre-Owned</h3>\n            <p>12-month unlimited-mile bumper-to-bumper warranty.</p>\n          </article>\n        </div>\n        <p class="fine-print">Warranty coverage shown is based on the certification information provided for this site. Contact Peyton for vehicle eligibility, complete warranty terms, exclusions and current availability.</p>\n      </div>\n    </section>\n\n    <section class="contact-section" id="contact">\n      <div class="shell contact-layout">\n        <div>\n          <p class="eyebrow">Work With Peyton</p>\n          <h2>Questions about a vehicle?</h2>\n          <p>Contact me directly for additional information, vehicle videos, pricing details, availability, trade questions, or to schedule an appointment.</p>\n        </div>\n        <div class="contact-actions">\n          <a class="button button-primary" href="tel:{{ person.phone_tel }}">Call {{ person.phone_display }}</a>\n          <a class="button button-secondary light" href="sms:{{ person.phone_tel }}?body=Hi%20Peyton%2C%20I%27d%20like%20more%20information%20about%20a%20vehicle.">Send a Text</a>\n          <p>{{ person.address }}</p>\n          <p>Please ask for Peyton Gaskins when you call or visit.</p>\n        </div>\n      </div>\n    </section>\n  </main>\n\n  <footer>\n    <div class="shell footer-wrap">\n      <p>Peyton Gaskins | Jim Hudson Cadillac / Buick GMC</p>\n      <p>Vehicle information, price and availability are subject to change. Contact Peyton to confirm details before visiting.</p>\n    </div>\n  </footer>\n\n  <template id="vehicleTemplate">\n    <article class="vehicle-card">\n      <div class="vehicle-image-wrap">\n        <img class="vehicle-image" alt="" loading="lazy">\n        <span class="condition-badge"></span>\n      </div>\n      <div class="vehicle-body">\n        <p class="vehicle-dealer"></p>\n        <h3 class="vehicle-title"></h3>\n        <p class="vehicle-price"></p>\n        <div class="vehicle-meta"></div>\n        <p class="warranty-line hidden"></p>\n        <div class="vehicle-actions">\n          <a class="button button-primary call-button">Call Peyton</a>\n          <a class="button button-secondary text-link">Text Peyton</a>\n        </div>\n        <p class="availability-line">Contact Peyton to confirm availability or schedule an appointment.</p>\n        <a class="detail-link original-link" target="_blank" rel="noopener">Original dealer listing</a>\n      </div>\n    </article>\n  </template>\n\n  <script>\n    window.SALES_CONTACT = {\n      name: {{ person.name|tojson }},\n      phoneDisplay: {{ person.phone_display|tojson }},\n      phoneTel: {{ person.phone_tel|tojson }}\n    };\n  </script>\n  <script src="/assets/app.js" defer></script>\n</body>\n</html>\n'
 STYLES_CSS = ':root {\n  --ink: #16202a;\n  --muted: #5e6872;\n  --line: #d9dee3;\n  --soft: #f4f6f8;\n  --navy: #10283f;\n  --navy-dark: #0b1b2a;\n  --white: #ffffff;\n  --max: 1240px;\n  --radius: 10px;\n}\n\n* { box-sizing: border-box; }\nhtml { scroll-behavior: smooth; }\nbody {\n  margin: 0;\n  font-family: Arial, Helvetica, sans-serif;\n  color: var(--ink);\n  background: var(--white);\n  line-height: 1.5;\n}\na { color: inherit; }\n.shell { width: min(var(--max), calc(100% - 40px)); margin: 0 auto; }\n.site-header {\n  position: sticky;\n  top: 0;\n  z-index: 20;\n  background: rgba(255,255,255,.97);\n  border-bottom: 1px solid var(--line);\n}\n.nav-wrap { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }\n.brand { text-decoration: none; display: flex; flex-direction: column; }\n.brand-name { font-size: 18px; font-weight: 700; letter-spacing: .01em; }\n.brand-sub { color: var(--muted); font-size: 13px; }\n.header-actions { display: flex; align-items: center; gap: 18px; }\n.plain-link { text-decoration: none; font-weight: 700; font-size: 14px; }\n.button {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 46px;\n  padding: 0 20px;\n  border-radius: 6px;\n  border: 1px solid var(--navy);\n  font-weight: 700;\n  font-size: 14px;\n  text-decoration: none;\n  cursor: pointer;\n}\n.button.compact { min-height: 40px; padding: 0 16px; }\n.button-primary { background: var(--navy); color: var(--white); }\n.button-primary:hover { background: var(--navy-dark); }\n.button-secondary { background: var(--white); color: var(--navy); }\n.button-secondary:hover { background: var(--soft); }\n.button-secondary.light { border-color: var(--white); color: var(--white); background: transparent; }\n.hero { padding: 72px 0; background: linear-gradient(180deg, #f7f8fa, #fff); border-bottom: 1px solid var(--line); }\n.hero-grid { display: grid; grid-template-columns: 1.45fr .75fr; gap: 64px; align-items: center; }\n.eyebrow { margin: 0 0 10px; text-transform: uppercase; letter-spacing: .11em; font-size: 12px; font-weight: 700; color: var(--muted); }\nh1, h2, h3 { line-height: 1.12; margin-top: 0; }\nh1 { font-size: clamp(38px, 5vw, 64px); max-width: 850px; margin-bottom: 22px; letter-spacing: -.035em; }\nh2 { font-size: clamp(28px, 3vw, 40px); margin-bottom: 10px; letter-spacing: -.02em; }\nh3 { font-size: 20px; margin-bottom: 8px; }\n.hero-copy { max-width: 760px; font-size: 18px; color: var(--muted); margin: 0 0 28px; }\n.hero-actions, .vehicle-actions { display: flex; flex-wrap: wrap; gap: 10px; }\n.contact-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--white); padding: 30px; box-shadow: 0 8px 30px rgba(16,40,63,.07); }\n.contact-card p { margin: 4px 0; }\n.contact-name { font-size: 23px; font-weight: 700; }\n.phone { display: inline-block; margin: 14px 0; font-size: 24px; font-weight: 700; color: var(--navy); text-decoration: none; }\n.contact-copy { color: var(--muted); font-size: 14px; }\n.inventory-section { padding: 66px 0 84px; }\n.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 30px; margin-bottom: 26px; }\n.section-heading.simple { margin-bottom: 22px; }\n.section-heading h2 { margin-bottom: 0; }\n.inventory-status { margin: 0; color: var(--muted); font-size: 13px; }\n.filters { display: grid; grid-template-columns: 2fr repeat(4, 1fr); gap: 12px; padding: 18px; background: var(--soft); border: 1px solid var(--line); border-radius: var(--radius); }\n.filters label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); }\n.filters input, .filters select { width: 100%; min-height: 44px; border: 1px solid #c8cfd6; border-radius: 5px; background: var(--white); color: var(--ink); padding: 0 12px; font-size: 14px; }\n.inventory-summary { min-height: 26px; margin: 18px 0; color: var(--muted); font-size: 14px; }\n.vehicle-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }\n.vehicle-card { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--white); display: flex; flex-direction: column; min-width: 0; }\n.vehicle-image-wrap { position: relative; aspect-ratio: 4 / 3; background: #eef1f4; overflow: hidden; }\n.vehicle-image { width: 100%; height: 100%; object-fit: cover; display: block; }\n.vehicle-image.is-empty { object-fit: contain; padding: 18%; opacity: .4; }\n.condition-badge { position: absolute; top: 12px; left: 12px; max-width: calc(100% - 24px); background: var(--navy); color: var(--white); padding: 6px 9px; border-radius: 4px; font-size: 11px; font-weight: 700; }\n.vehicle-body { padding: 20px; display: flex; flex-direction: column; flex: 1; }\n.vehicle-dealer { margin: 0 0 6px; color: var(--muted); font-size: 12px; font-weight: 700; }\n.vehicle-title { font-size: 21px; margin-bottom: 14px; }\n.vehicle-price { font-size: 25px; font-weight: 700; margin: 0 0 15px; }\n.price-label { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }\n.vehicle-meta { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 12px 0; margin-bottom: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; color: var(--muted); font-size: 12px; }\n.vehicle-meta span { overflow-wrap: anywhere; }\n.warranty-line { margin: 0 0 15px; font-size: 13px; font-weight: 700; }\n.vehicle-actions { margin-top: auto; }\n.vehicle-actions .button { flex: 1 1 130px; }\n.call-line { display: block; text-align: center; margin-top: 12px; color: var(--navy); font-size: 13px; font-weight: 700; text-decoration: none; }\n.empty-state { text-align: center; padding: 60px 20px; border: 1px solid var(--line); border-radius: var(--radius); }\n.hidden { display: none !important; }\n.certification-section { background: var(--soft); padding: 64px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }\n.cert-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }\n.cert-grid article { background: var(--white); padding: 26px; border: 1px solid var(--line); border-radius: var(--radius); }\n.cert-grid p { margin: 0; color: var(--muted); }\n.fine-print { color: var(--muted); font-size: 12px; margin: 18px 0 0; }\n.contact-section { background: var(--navy); color: var(--white); padding: 68px 0; }\n.contact-section .eyebrow { color: #b9c8d5; }\n.contact-layout { display: grid; grid-template-columns: 1.2fr .8fr; gap: 80px; align-items: center; }\n.contact-layout > div > p:not(.eyebrow) { color: #d4dde5; max-width: 700px; }\n.contact-actions { display: flex; flex-wrap: wrap; gap: 10px; }\n.contact-actions p { flex-basis: 100%; margin: 7px 0 0; font-size: 13px; }\nfooter { background: var(--navy-dark); color: #bcc8d1; padding: 28px 0; font-size: 12px; }\n.footer-wrap { display: flex; justify-content: space-between; gap: 30px; }\n.footer-wrap p { margin: 0; max-width: 660px; }\n.availability-line { margin: 12px 0 7px; color: var(--muted); font-size: 13px; }\n.original-link { display: inline-block; font-size: 12px; color: var(--muted); }\n@media (max-width: 980px) {\n  .hero-grid, .contact-layout { grid-template-columns: 1fr; gap: 36px; }\n  .filters { grid-template-columns: 1fr 1fr 1fr; }\n  .search-field { grid-column: span 2; }\n  .vehicle-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n}\n@media (max-width: 680px) {\n  .shell { width: min(100% - 24px, var(--max)); }\n  .site-header { position: static; }\n  .nav-wrap { min-height: 82px; }\n  .brand-sub, .plain-link { display: none; }\n  .hero { padding: 46px 0; }\n  h1 { font-size: 39px; }\n  .header-actions { gap: 8px; }\n  .filters { grid-template-columns: 1fr 1fr; }\n  .search-field { grid-column: 1 / -1; }\n  .vehicle-grid, .cert-grid { grid-template-columns: 1fr; }\n  .section-heading { align-items: start; flex-direction: column; gap: 8px; }\n  .footer-wrap { flex-direction: column; }\n}\n\n.load-more-wrap { text-align: center; margin: 28px 0 8px; }\n.load-more-wrap.hidden { display: none; }\n'
@@ -245,6 +247,7 @@ SOURCES = [
 ]
 
 VIN_RE = re.compile(r"[A-HJ-NPR-Z0-9]{17}", re.I)
+_USED_STOCK_RE = re.compile(r"^(?:JB\d+|B\d+)", re.I)
 VEHICLE_URL_RE = re.compile(
     r"https?://[^/\s<>\"']+/inventory/(?:new|certified-used|used)-.*?-[A-HJ-NPR-Z0-9]{17}/",
     re.I,
@@ -492,13 +495,31 @@ def fetch_sitemap(source: dict) -> tuple[list[Vehicle], str, str | None]:
 
 
 PRICE_PATTERNS = [
-    ("Internet Price", re.compile(r"Internet Price\s*\$\s*([\d,]+)", re.I)),
-    ("Sale Price", re.compile(r"Sale Price\s*\$\s*([\d,]+)", re.I)),
-    ("Final Price", re.compile(r"Final Price\s*\$\s*([\d,]+)", re.I)),
-    ("Price", re.compile(r"(?:^|\s)Price\s*\$\s*([\d,]+)", re.I)),
-    ("MSRP", re.compile(r"MSRP\s*\$\s*([\d,]+)", re.I)),
-    ("Market Value", re.compile(r"Market Value\s*\$\s*([\d,]+)", re.I)),
+    ("Jim Hudson Price", re.compile(r"Jim\s+Hudson\s+Price\s*[:\-]?\s*\$\s*([\d,]+)", re.I)),
+    ("Internet Price", re.compile(r"Internet\s+Price\s*[:\-]?\s*\$\s*([\d,]+)", re.I)),
+    ("Sale Price", re.compile(r"Sale\s+Price\s*[:\-]?\s*\$\s*([\d,]+)", re.I)),
+    ("Selling Price", re.compile(r"Selling\s+Price\s*[:\-]?\s*\$\s*([\d,]+)", re.I)),
+    ("Our Price", re.compile(r"Our\s+Price\s*[:\-]?\s*\$\s*([\d,]+)", re.I)),
+    ("Final Price", re.compile(r"Final\s+Price\s*[:\-]?\s*\$\s*([\d,]+)", re.I)),
+    ("Price", re.compile(r"(?:^|\s)Price\s*[:\-]?\s*\$\s*([\d,]+)", re.I)),
+    ("MSRP", re.compile(r"MSRP\s*[:\-]?\s*\$\s*([\d,]+)", re.I)),
+    ("Market Value", re.compile(r"Market\s+Value\s*[:\-]?\s*\$\s*([\d,]+)", re.I)),
 ]
+
+
+IMAGE_ALLOWED_HINTS = (
+    "vehicle-images.carscommerce.inc",
+    "vini.gm.com",
+    "cgi.gmc.com",
+    "images.cars.com",
+    "dealerinspire-image-library-prod",
+    "/det-content/uploads/stock-images/",
+    "/stock-images/",
+)
+IMAGE_REJECT_HINTS = (
+    "logo", "icon", "placeholder", "no-image", "noimage", "coming-soon",
+    "spacer", "pixel", "tracking", "favicon", "avatar",
+)
 
 
 def parse_int(value: str | None) -> int | None:
@@ -509,46 +530,101 @@ def parse_int(value: str | None) -> int | None:
 
 
 def find_price(text: str) -> tuple[int | None, str]:
+    normalized = re.sub(r"\s+", " ", html_lib.unescape(text or "")).strip()
     for label, pattern in PRICE_PATTERNS:
-        match = pattern.search(text or "")
+        match = pattern.search(normalized)
         if match:
             return parse_int(match.group(1)), label
     return None, "Contact for Price"
 
 
-def collect_image_urls(node) -> list[str]:
-    urls: list[str] = []
-    seen: set[str] = set()
-    candidates = []
-    for img in node.find_all("img") if hasattr(node, "find_all") else []:
-        for attr in ("data-src", "data-lazy-src", "data-original", "src"):
-            if img.get(attr):
-                candidates.append(img.get(attr))
-        for attr in ("data-srcset", "srcset"):
-            value = img.get(attr)
-            if value:
-                candidates.extend(part.strip().split(" ")[0] for part in value.split(","))
+def _json_ld_image_candidates(node) -> list[str]:
+    candidates: list[str] = []
+    if not hasattr(node, "find_all"):
+        return candidates
+
+    def walk(value, key_hint=""):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                low_key = str(key).lower()
+                if low_key in {"image", "images", "contenturl", "thumbnailurl"}:
+                    walk(child, low_key)
+                elif isinstance(child, (dict, list)):
+                    walk(child, low_key)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, key_hint)
+        elif isinstance(value, str) and key_hint in {"image", "images", "contenturl", "thumbnailurl"}:
+            candidates.append(value)
+
+    for script in node.find_all("script"):
+        script_type = (script.get("type") or "").lower()
+        if "ld+json" not in script_type:
+            continue
+        raw = script.string or script.get_text(" ", strip=True)
+        if not raw:
+            continue
+        try:
+            walk(json.loads(raw))
+        except Exception:
+            continue
+    return candidates
+
+
+def collect_image_urls(node, vin: str = "") -> list[str]:
+    candidates: list[str] = []
     if hasattr(node, "find_all"):
+        for img in node.find_all("img"):
+            for attr in ("data-src", "data-lazy-src", "data-original", "data-image", "src"):
+                if img.get(attr):
+                    candidates.append(img.get(attr))
+            for attr in ("data-srcset", "srcset"):
+                value = img.get(attr)
+                if value:
+                    candidates.extend(part.strip().split(" ")[0] for part in value.split(","))
         for source in node.find_all("source"):
             value = source.get("srcset") or source.get("data-srcset")
             if value:
                 candidates.extend(part.strip().split(" ")[0] for part in value.split(","))
         for meta in node.find_all("meta"):
-            if (meta.get("property") or "").lower() in {"og:image", "og:image:url"} and meta.get("content"):
+            prop = (meta.get("property") or meta.get("name") or "").lower()
+            if prop in {"og:image", "og:image:url", "twitter:image"} and meta.get("content"):
                 candidates.append(meta.get("content"))
-    raw_blob = str(node)
+        candidates.extend(_json_ld_image_candidates(node))
+
+    raw_blob = str(node).replace("\\/", "/")
     candidates.extend(re.findall(r"https?://[^\s\"'<>]+", raw_blob))
-    for raw in candidates:
-        url = html_lib.unescape(str(raw or "")).strip()
+
+    seen: set[str] = set()
+    scored: list[tuple[int, int, str]] = []
+    vin_low = (vin or "").lower()
+    for order, raw in enumerate(candidates):
+        url = html_lib.unescape(str(raw or "")).replace("\\/", "/").strip().rstrip("\\")
         if not url or url.startswith("data:") or not url.startswith(("http://", "https://")):
             continue
         low = url.lower()
-        if not any(host in low for host in ("vehicle-images.carscommerce.inc", "vini.gm.com", "cgi.gmc.com", "images.cars.com")):
+        if any(bad in low for bad in IMAGE_REJECT_HINTS):
             continue
-        if url not in seen:
-            seen.add(url)
-            urls.append(url)
-    return urls
+        if not any(hint in low for hint in IMAGE_ALLOWED_HINTS):
+            continue
+        # Strip common HTML/JSON punctuation accidentally captured by the broad URL fallback.
+        url = url.rstrip('),]}')
+        if url in seen:
+            continue
+        seen.add(url)
+        score = 0
+        if vin_low and vin_low in low:
+            score += 100
+        if "/det-content/uploads/stock-images/" in low or "/stock-images/" in low:
+            score += 60
+        if "vehicle-images.carscommerce.inc" in low:
+            score += 50
+        if re.search(r"\.(?:jpe?g|png|webp)(?:\?|$)", low):
+            score += 20
+        scored.append((score, -order, url))
+
+    scored.sort(reverse=True)
+    return [url for _, _, url in scored]
 
 
 def title_from_node(node, fallback: str) -> str:
@@ -560,17 +636,61 @@ def title_from_node(node, fallback: str) -> str:
     return clean_display_title(fallback)
 
 
+def _certification_fields(base: Vehicle, text: str) -> tuple[str, str, str]:
+    low = (text or "").lower()
+    if "carbravo" in low:
+        return "certified", "CarBravo Certified Pre-Owned", "12-month / 12,000-mile warranty"
+    cadillac_cpo = (
+        base.make.lower() == "cadillac"
+        and "jimhudsoncadillac.com" in base.source_domain.lower()
+        and ("certified pre-owned" in low or "certified pre owned" in low or "cadillac certified" in low)
+    )
+    if cadillac_cpo:
+        return "certified", "Cadillac Certified Pre-Owned", "12-month unlimited-mile bumper-to-bumper warranty"
+    return base.condition, base.condition_label, base.warranty
+
+
+def _json_ld_sku(soup) -> str:
+    if not hasattr(soup, "find_all"):
+        return ""
+    for script in soup.find_all("script"):
+        if "ld+json" not in (script.get("type") or "").lower():
+            continue
+        raw = script.string or script.get_text(" ", strip=True)
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        stack = list(data) if isinstance(data, list) else [data]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                sku = item.get("sku")
+                if isinstance(sku, str) and re.fullmatch(r"[A-Z0-9-]{2,20}", sku.strip(), re.I):
+                    return sku.strip().upper()
+                stack.extend(v for v in item.values() if isinstance(v, (dict, list)))
+            elif isinstance(item, list):
+                stack.extend(item)
+    return ""
+
+
 def detail_vehicle_from_html(html: str, base: Vehicle) -> Vehicle:
     soup = BeautifulSoup(html or "", "html.parser")
     text = " ".join(soup.stripped_strings)
     title = title_from_node(soup, base.title)
     vin_match = VIN_RE.search(text)
-    stock_match = re.search(r"\bStock\s*:?\s*([A-Z0-9-]{2,20})\b", text, re.I)
-    mileage_match = re.search(r"\b(?:Mileage|Odometer)\s*:?\s*([\d,]{1,10})\s*(?:miles?)?\b", text, re.I)
+    stock_match = re.search(r"\bStock(?:\s*(?:#|No\.?|Number))?\s*[:#-]?\s*([A-Z0-9-]{2,20})\b", text, re.I)
+    mileage_match = re.search(r"\b(?:Mileage|Odometer)\s*[:#-]?\s*([\d,]{1,10})\s*(?:miles?)?\b", text, re.I)
+    if not mileage_match:
+        mileage_match = re.search(r"\b([\d,]{1,10})\s+miles?\b", text, re.I)
     price, price_label = find_price(text)
-    images = collect_image_urls(soup)
+    images = collect_image_urls(soup, base.vin)
+    stock = stock_match.group(1).upper() if stock_match else _json_ld_sku(soup)
+    condition, condition_label, warranty = _certification_fields(base, text)
 
-    # Keep year/make from the sitemap URL, but improve model/trim search text from the shorter page heading.
+    # Keep year/make from the inventory URL, but improve model/trim search text from the shorter page heading.
     short = clean_display_title(title)
     after_prefix = short
     prefix = " ".join(x for x in (base.year, base.make) if x).strip()
@@ -586,13 +706,13 @@ def detail_vehicle_from_html(html: str, base: Vehicle) -> Vehicle:
         make=base.make,
         model=model or base.model,
         trim=trim,
-        condition=base.condition,
-        condition_label=base.condition_label,
-        warranty=base.warranty,
+        condition=condition,
+        condition_label=condition_label,
+        warranty=warranty,
         price=price,
         price_label=price_label if price is not None else base.price_label,
         mileage=parse_int(mileage_match.group(1)) if mileage_match else None,
-        stock=stock_match.group(1).upper() if stock_match else "",
+        stock=stock,
         vin=(vin_match.group(0).upper() if vin_match else base.vin),
         image=images[0] if images else "",
         url=base.url,
@@ -646,7 +766,8 @@ def card_vehicle_from_anchor(anchor, source: dict) -> Vehicle | None:
     stock_match = re.search(r"\bStock\s*:?\s*([A-Z0-9-]{2,20})\b", text, re.I)
     mileage_match = re.search(r"\b(?:Mileage|Odometer)\s*:?\s*([\d,]{1,10})\s*(?:miles?)?\b", text, re.I)
     price, price_label = find_price(text)
-    images = collect_image_urls(card)
+    images = collect_image_urls(card, base.vin)
+    condition, condition_label, warranty = _certification_fields(base, text)
 
     return Vehicle(
         title=title or base.title,
@@ -654,9 +775,9 @@ def card_vehicle_from_anchor(anchor, source: dict) -> Vehicle | None:
         make=base.make,
         model=base.model,
         trim=base.trim,
-        condition=base.condition,
-        condition_label=base.condition_label,
-        warranty=base.warranty,
+        condition=condition,
+        condition_label=condition_label,
+        warranty=warranty,
         price=price,
         price_label=price_label if price is not None else base.price_label,
         mileage=parse_int(mileage_match.group(1)) if mileage_match else None,
@@ -673,7 +794,8 @@ def card_vehicle_from_anchor(anchor, source: dict) -> Vehicle | None:
 def fetch_listing_feed(source: dict, path: str) -> tuple[list[Vehicle], str | None]:
     s = session()
     rows: list[Vehicle] = []
-    seen_vins: set[str] = set()
+    seen_target_vins: set[str] = set()
+    seen_page_vins: set[str] = set()
     last_error = None
     for page in range(1, MAX_LISTING_PAGES + 1):
         url = f"{source['domain']}{path}?_p={page}"
@@ -684,31 +806,180 @@ def fetch_listing_feed(source: dict, path: str) -> tuple[list[Vehicle], str | No
             last_error = type(exc).__name__
             break
         soup = BeautifulSoup(response.text, "html.parser")
-        page_rows: list[Vehicle] = []
-        page_seen: set[str] = set()
+        page_targets: list[Vehicle] = []
+        page_all_vins: set[str] = set()
         for anchor in soup.find_all("a", href=True):
             href = anchor.get("href") or ""
             if "/inventory/" not in href:
                 continue
             vehicle = card_vehicle_from_anchor(anchor, source)
+            if vehicle is None or not vehicle.vin or vehicle.vin in page_all_vins:
+                continue
+            page_all_vins.add(vehicle.vin)
+            if path == "/used-vehicles/":
+                if vehicle.condition == "new" or not vehicle.stock or not _USED_STOCK_RE.match(vehicle.stock):
+                    continue
+            elif path == "/new-vehicles/":
+                if vehicle.condition != "new" or not _allowed_new_for_source(vehicle, source):
+                    continue
+            page_targets.append(vehicle)
+
+        # Stop only when the dealership page itself stops producing new VINs. A page with
+        # no B/JB used stock can still be followed by a later page that contains one.
+        new_page_vins = page_all_vins - seen_page_vins
+        if not new_page_vins:
+            break
+        seen_page_vins.update(new_page_vins)
+
+        for vehicle in page_targets:
+            if vehicle.vin in seen_target_vins:
+                continue
+            seen_target_vins.add(vehicle.vin)
+            rows.append(vehicle)
+    return rows, last_error
+
+
+def _allowed_new_for_source(vehicle: Vehicle, source: dict) -> bool:
+    make = vehicle.make.lower()
+    domain = source["domain"].lower()
+    if "jimhudsongm.com" in domain:
+        return make in {"buick", "gmc"}
+    if "jimhudsoncadillac.com" in domain:
+        return make == "cadillac"
+    return False
+
+
+def llm_vehicle_from_anchor(anchor, source: dict) -> Vehicle | None:
+    href = anchor.get("href") or ""
+    if "/inventory/" not in href:
+        return None
+    href = urljoin(source["domain"] + "/", href)
+    base = vehicle_from_url(href, source)
+    if base is None:
+        return None
+
+    card = None
+    for parent in anchor.parents:
+        if getattr(parent, "name", "") in {"body", "html"}:
+            break
+        text = " ".join(parent.stripped_strings)
+        vins = VIN_RE.findall(text)
+        if base.vin in [v.upper() for v in vins] and len(set(v.upper() for v in vins)) == 1:
+            card = parent
+            # Prefer the smallest container that also has mileage/status/price information.
+            if re.search(r"\b(?:New|Used|CTP|CarBravo|Certified)\b", text, re.I) and (
+                "$" in text or "Call for price" in text.lower()
+            ):
+                break
+    if card is None:
+        return None
+
+    text = " ".join(card.stripped_strings)
+    title_text = " ".join(anchor.stripped_strings).strip()
+    title = clean_display_title(title_text if re.search(r"\b(?:19|20)\d{2}\b", title_text) else base.title)
+    mileage_match = re.search(r"\b([\d,]{1,10})\s+miles?\b", text, re.I)
+    price_match = re.search(r"\$\s*([\d,]{3,})", text)
+    price = parse_int(price_match.group(1)) if price_match else None
+    price_label = "Current Price" if price is not None else "Contact for Price"
+
+    low = text.lower()
+    condition, condition_label, warranty = base.condition, base.condition_label, base.warranty
+    if "carbravo" in low:
+        condition, condition_label, warranty = "certified", "CarBravo Certified Pre-Owned", "12-month / 12,000-mile warranty"
+    elif "used" in low and base.condition != "certified":
+        condition, condition_label = "preowned", "Pre-Owned / Used"
+    elif "certified" in low and base.make.lower() == "cadillac" and "jimhudsoncadillac.com" in source["domain"].lower():
+        condition, condition_label, warranty = "certified", "Cadillac Certified Pre-Owned", "12-month unlimited-mile bumper-to-bumper warranty"
+    elif "new" in low or "ctp" in low:
+        condition, condition_label, warranty = "new", "New", ""
+
+    return Vehicle(
+        title=title or base.title,
+        year=base.year,
+        make=base.make,
+        model=base.model,
+        trim=base.trim,
+        condition=condition,
+        condition_label=condition_label,
+        warranty=warranty,
+        price=price,
+        price_label=price_label,
+        mileage=parse_int(mileage_match.group(1)) if mileage_match else None,
+        stock="",
+        vin=base.vin,
+        image="",
+        url=base.url,
+        dealer=base.dealer,
+        source_domain=base.source_domain,
+        images=[],
+    )
+
+
+def fetch_llm_feed(source: dict, inventory_type: str = "new") -> tuple[list[Vehicle], str | None]:
+    """Read Jim Hudson's lightweight inventory feed for current price/mileage metadata."""
+    s = session()
+    rows: list[Vehicle] = []
+    seen_vins: set[str] = set()
+    last_error = None
+    max_pages = 20
+    for page in range(1, max_pages + 1):
+        url = f"{source['domain']}/llm/inventory/?limit=100&page={page}&type={inventory_type}"
+        try:
+            response = s.get(url, timeout=DETAIL_TIMEOUT_SECONDS)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            last_error = type(exc).__name__
+            break
+        soup = BeautifulSoup(response.text, "html.parser")
+        page_rows: list[Vehicle] = []
+        page_seen: set[str] = set()
+        for anchor in soup.find_all("a", href=True):
+            if "/inventory/" not in (anchor.get("href") or ""):
+                continue
+            vehicle = llm_vehicle_from_anchor(anchor, source)
             if vehicle is None or not vehicle.vin or vehicle.vin in page_seen:
+                continue
+            if inventory_type in {"new", "ctp"} and (vehicle.condition != "new" or not _allowed_new_for_source(vehicle, source)):
                 continue
             page_seen.add(vehicle.vin)
             page_rows.append(vehicle)
-        new_rows = [v for v in page_rows if v.vin not in seen_vins]
+        new_rows = [vehicle for vehicle in page_rows if vehicle.vin not in seen_vins]
         if not new_rows:
             break
         rows.extend(new_rows)
-        seen_vins.update(v.vin for v in new_rows)
+        seen_vins.update(vehicle.vin for vehicle in new_rows)
+
+        page_text = " ".join(soup.stripped_strings)
+        page_match = re.search(r"Page\s+(\d+)\s+of\s+(\d+)", page_text, re.I)
+        if page_match and int(page_match.group(1)) >= int(page_match.group(2)):
+            break
+        if len(page_rows) < 100 and not page_match:
+            break
     return rows, last_error
 
 
 def merge_vehicle(existing: Vehicle, incoming: Vehicle) -> Vehicle:
     fields = asdict(existing)
     incoming_fields = asdict(incoming)
+    price_priority = {
+        "Jim Hudson Price": 100, "Internet Price": 95, "Sale Price": 90,
+        "Selling Price": 85, "Our Price": 85, "Final Price": 80,
+        "Current Price": 75, "Price": 60, "MSRP": 20, "Market Value": 10,
+    }
 
     # Fill missing card/detail information such as price, photo, mileage and stock.
     for key, value in incoming_fields.items():
+        if key == "price":
+            incoming_price = incoming.price
+            existing_price = existing.price
+            incoming_rank = price_priority.get(incoming.price_label, 0)
+            existing_rank = price_priority.get(existing.price_label, 0)
+            if incoming_price is not None and (existing_price is None or incoming_rank > existing_rank):
+                fields["price"] = incoming_price
+                fields["price_label"] = incoming.price_label
+            continue
+        if key == "price_label":
+            continue
         if key == "images":
             combined = []
             for image_url in list(fields.get("images") or []) + list(value or []):
@@ -763,18 +1034,57 @@ KNOWN_DETAILS = [
     Vehicle("Pre-Owned 2025 Volkswagen Atlas 2.0T SE w/Technology", "2025", "Volkswagen", "Atlas", "2.0T SE w/Technology", "preowned", "Pre-Owned", "", 26582, "$26,582", 26582, "JB2239", "1V2WR2CA9SC501534", "https://vehicle-images.carscommerce.inc/c12a-110011505/1V2WR2CA9SC501534/9d50c30670fb5ec3398718a6a680cd40.jpg", "https://www.jimhudsongm.com/inventory/used-2025-volkswagen-atlas-2-0t-se-wtechnology-front-wheel-drive-sport-utility-1v2wr2ca9sc501534/", "Jim Hudson Buick GMC", "https://www.jimhudsongm.com"),
 ]
 
+def _safe_known_details(known: Vehicle) -> Vehicle:
+    """Use the snapshot only for identity/photo/stock hints, never as a current price source."""
+    return Vehicle(
+        title=known.title,
+        year=known.year,
+        make=known.make,
+        model=known.model,
+        trim=known.trim,
+        condition="preowned",
+        condition_label="Pre-Owned / Used",
+        warranty="",
+        price=None,
+        price_label="Contact for Price",
+        mileage=None,
+        stock=known.stock,
+        vin=known.vin,
+        image=known.image,
+        url=known.url,
+        dealer=known.dealer,
+        source_domain=known.source_domain,
+        images=list(known.images or ([known.image] if known.image else [])),
+    )
+
+
+def _inventory_rule_allows(vehicle: Vehicle) -> bool:
+    if vehicle.condition == "new":
+        domain = vehicle.source_domain.lower()
+        make = vehicle.make.lower()
+        return (
+            (make in {"buick", "gmc"} and "jimhudsongm.com" in domain)
+            or (make == "cadillac" and "jimhudsoncadillac.com" in domain)
+        )
+    return bool(vehicle.stock and _USED_STOCK_RE.match(vehicle.stock))
+
+
 def refresh_inventory() -> dict:
     raw: list[Vehicle] = []
     errors: list[str] = []
     source_modes: dict[str, str] = {}
 
-    # Sitemaps guarantee broad inventory coverage. Listing pages add price, mileage, stock and dealership photos in bulk.
+    # Sitemaps provide broad VIN coverage. Dealer listing pages provide stock numbers/photos,
+    # and the lightweight /llm/inventory feed provides current displayed prices and mileage.
     jobs = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
         for source in SOURCES:
             jobs.append(("sitemap", source, None, executor.submit(fetch_sitemap, source)))
             jobs.append(("listing", source, "/new-vehicles/", executor.submit(fetch_listing_feed, source, "/new-vehicles/")))
             jobs.append(("listing", source, "/used-vehicles/", executor.submit(fetch_listing_feed, source, "/used-vehicles/")))
+            jobs.append(("llm", source, "new", executor.submit(fetch_llm_feed, source, "new")))
+            jobs.append(("llm", source, "ctp", executor.submit(fetch_llm_feed, source, "ctp")))
+            jobs.append(("llm", source, "used", executor.submit(fetch_llm_feed, source, "used")))
 
         for kind, source, path, future in jobs:
             try:
@@ -788,7 +1098,8 @@ def refresh_inventory() -> dict:
                     vehicles, error = future.result()
                     raw.extend(vehicles)
                     if error and not vehicles:
-                        errors.append(f"{source['dealer']} {path.strip('/')} details temporarily unavailable")
+                        label = path.strip("/") if isinstance(path, str) else str(path)
+                        errors.append(f"{source['dealer']} {label} details temporarily unavailable")
             except Exception as exc:
                 errors.append(f"{source['dealer']}: {type(exc).__name__}")
 
@@ -800,20 +1111,21 @@ def refresh_inventory() -> dict:
         else:
             deduped[key] = vehicle
 
-    # Preserve verified snapshot details only for VINs that are still in the current live inventory.
+    # Keep only non-price hints from the small verified snapshot, and only when that VIN is
+    # still present in a live feed. This avoids ever showing an old snapshot price as current.
     if deduped:
         for known in KNOWN_DETAILS:
             if known.vin and known.vin in deduped:
-                deduped[known.vin] = merge_vehicle(deduped[known.vin], known)
+                deduped[known.vin] = merge_vehicle(deduped[known.vin], _safe_known_details(known))
     else:
         for known in KNOWN_DETAILS:
-            deduped[known.vin or known.url] = known
-        errors.append("Live inventory feeds unavailable; showing a limited emergency snapshot")
+            safe = _safe_known_details(known)
+            deduped[safe.vin or safe.url] = safe
+        errors.append("Live inventory feeds unavailable; showing a limited emergency snapshot without snapshot pricing")
 
-    # Missing card details are enriched lazily for visible vehicles through /api/vehicle-detail.
-    # This keeps the full inventory list fast even when there are hundreds of vehicles.
+    # Enforce Peyton's inventory rules after every source has had a chance to contribute stock.
+    vehicles = [vehicle for vehicle in deduped.values() if _inventory_rule_allows(vehicle)]
 
-    vehicles = list(deduped.values())
     for vehicle in vehicles:
         vehicle.title = clean_display_title(vehicle.title or " ".join(x for x in (vehicle.year, vehicle.make, vehicle.model, vehicle.trim) if x))
         if vehicle.images and not vehicle.image:
@@ -841,8 +1153,10 @@ def refresh_inventory() -> dict:
         "errors": errors,
         "source_modes": source_modes,
         "rules": {
-            "coverage": "all vehicles discovered from both dealer inventory sitemaps",
-            "details": "price, mileage, stock and available dealership photos are merged from inventory cards and vehicle detail pages",
+            "new_inventory": "Buick/GMC from Jim Hudson Buick GMC and Cadillac from Jim Hudson Cadillac",
+            "preowned_stock_filter": "stock begins with JB + digits or B + digits",
+            "pricing": "current dealer inventory feed first, detail page fallback",
+            "photos": "current dealership vehicle gallery URLs, detail page fallback",
             "title_format": "Year + Make + Model + Trim only",
             "categories": ["New", "Certified Pre-Owned", "Pre-Owned / Used"],
             "deduplication": "VIN",
@@ -925,7 +1239,7 @@ def vehicle_detail_api():
 
 @app.route("/health")
 def health():
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "version": SITE_VERSION})
 
 
 if __name__ == "__main__":
