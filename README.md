@@ -1,24 +1,45 @@
-# Peyton Gaskins Auto Website - iPad / Render Edition
+# Peyton Gaskins Inventory Website
 
-This edition is intentionally easy to upload from an iPad. The website HTML, CSS and JavaScript are embedded into `app.py`, so there are no nested folders and no hidden files to recreate.
+Personal vehicle inventory website for Peyton Gaskins at Jim Hudson Cadillac / Buick GMC.
 
-## Upload these four files to GitHub
+## What this version does
 
-- `app.py`
-- `requirements.txt`
-- `render.yaml`
-- `README.md`
+- Uses both Jim Hudson Cadillac and Jim Hudson Buick GMC inventory sitemaps so every discovered vehicle can appear.
+- Pulls vehicle-card details in bulk from the new and used inventory pages.
+- Shows a short customer-facing vehicle name in the format: Year + Make + Model + Trim.
+- Removes drivetrain/body wording such as Front Wheel Drive, All Wheel Drive, Four Wheel Drive, Crew Cab, Sport Utility, and similar extra wording from the visible title.
+- Shows price, mileage, VIN and an available dealership photo on each card when those details are available.
+- Keeps stock numbers searchable and includes them in the prefilled text message without cluttering the card.
+- If a visible vehicle is still missing price, photo, stock or used-vehicle mileage, the site automatically checks that exact dealer detail page in the background and updates the card.
+- Makes Call Peyton and Text Peyton the main actions. The original dealership listing is a smaller secondary link.
+- Keeps the previously requested CarBravo and Cadillac Certified Pre-Owned warranty wording.
 
-## Deploy on Render
+## Run locally
 
-1. Create a GitHub repository and upload all four files above.
-2. Sign in to Render and connect GitHub.
-3. Choose New > Blueprint.
-4. Select the repository.
-5. Render reads `render.yaml` and creates the Python web service automatically.
-6. Approve the deployment.
-7. Open the `onrender.com` URL Render gives you.
+```bash
+pip install -r requirements.txt
+python app.py
+```
 
-The included Render configuration uses Python 3.13.15, installs the Python requirements, starts the site with Gunicorn, and checks `/health`.
+Then open `http://localhost:5000`.
 
-Free Render web services can spin down after inactivity. The first load after a quiet period may therefore take longer.
+## Production
+
+The included Procfile runs the app with Gunicorn. The hosting service must allow outbound HTTPS requests to the Jim Hudson dealership websites because the inventory is live rather than hard-coded.
+
+Useful optional environment variables:
+
+- `PORT` - web server port.
+- `INVENTORY_CACHE_SECONDS` - inventory cache time; default 1800 seconds.
+- `INVENTORY_DIRECT_TIMEOUT` - sitemap request timeout; default 7 seconds.
+- `INVENTORY_READER_TIMEOUT` - fallback reader timeout; default 18 seconds.
+- `INVENTORY_DETAIL_TIMEOUT` - vehicle/list page request timeout; default 9 seconds.
+- `INVENTORY_MAX_LISTING_PAGES` - maximum inventory pages checked per feed; default 100.
+
+## Contact shown on the website
+
+Peyton Gaskins  
+Sales Associate  
+Jim Hudson Cadillac / Buick GMC  
+803-542-1353  
+4035 Kaiser Hill Rd, Columbia, SC 29203

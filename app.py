@@ -6,18 +6,221 @@ import os
 import re
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlparse
 
 import requests
+from bs4 import BeautifulSoup
 from flask import Flask, Response, jsonify, render_template_string, request
 
 app = Flask(__name__, static_folder=None)
 
-INDEX_HTML = '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n  <meta name="description" content="Browse new, certified pre-owned, and used vehicle inventory with Peyton Gaskins at Jim Hudson Cadillac / Buick GMC in Columbia, South Carolina.">\n  <title>Peyton Gaskins | Jim Hudson Cadillac / Buick GMC</title>\n  <link rel="preconnect" href="https://vehicle-images.carscommerce.inc">\n  <link rel="stylesheet" href="/assets/styles.css">\n</head>\n<body>\n  <header class="site-header">\n    <div class="shell nav-wrap">\n      <a class="brand" href="#top" aria-label="Peyton Gaskins inventory home">\n        <span class="brand-name">Peyton Gaskins</span>\n        <span class="brand-sub">Jim Hudson Cadillac / Buick GMC</span>\n      </a>\n      <div class="header-actions">\n        <a class="plain-link" href="#inventory">Inventory</a>\n        <a class="button button-primary compact" href="tel:{{ person.phone_tel }}">Call {{ person.phone_display }}</a>\n      </div>\n    </div>\n  </header>\n\n  <main id="top">\n    <section class="hero">\n      <div class="shell hero-grid">\n        <div>\n          <p class="eyebrow">Columbia, South Carolina</p>\n          <h1>Find the right vehicle. Work directly with Peyton.</h1>\n          <p class="hero-copy">Browse new, certified pre-owned, and used vehicles listed across the Jim Hudson Cadillac and Jim Hudson Buick GMC websites.</p>\n          <div class="hero-actions">\n            <a class="button button-primary" href="#inventory">Browse Inventory</a>\n            <a class="button button-secondary" href="sms:{{ person.phone_tel }}?body=Hi%20Peyton%2C%20I%27m%20interested%20in%20a%20vehicle%20I%20saw%20on%20your%20website.">Text Peyton</a>\n          </div>\n        </div>\n        <aside class="contact-card">\n          <p class="contact-name">{{ person.name }}</p>\n          <p>{{ person.title }}</p>\n          <p>{{ person.dealership }}</p>\n          <a class="phone" href="tel:{{ person.phone_tel }}">{{ person.phone_display }}</a>\n          <p class="contact-copy">Contact me directly for additional information, vehicle videos, pricing details, availability, or to schedule an appointment. Please ask for Peyton Gaskins when calling or visiting the dealership.</p>\n        </aside>\n      </div>\n    </section>\n\n    <section class="inventory-section" id="inventory">\n      <div class="shell">\n        <div class="section-heading">\n          <div>\n            <p class="eyebrow">Current Inventory</p>\n            <h2>New and Pre-Owned Vehicles</h2>\n          </div>\n          <p class="inventory-status" id="inventoryStatus">Loading current inventory...</p>\n        </div>\n\n        <div class="filters" aria-label="Inventory filters">\n          <label class="search-field">\n            <span>Search</span>\n            <input id="searchInput" type="search" placeholder="Year, make, model, stock or VIN" autocomplete="off">\n          </label>\n          <label>\n            <span>Type</span>\n            <select id="conditionFilter">\n              <option value="all">All Inventory</option>\n              <option value="new">New</option>\n              <option value="certified">Certified Pre-Owned</option>\n              <option value="preowned">Pre-Owned / Used</option>\n            </select>\n          </label>\n          <label>\n            <span>Make</span>\n            <select id="makeFilter"><option value="all">All Makes</option></select>\n          </label>\n          <label>\n            <span>Maximum Price</span>\n            <select id="priceFilter">\n              <option value="all">Any Price</option>\n              <option value="30000">$30,000</option>\n              <option value="40000">$40,000</option>\n              <option value="50000">$50,000</option>\n              <option value="60000">$60,000</option>\n              <option value="75000">$75,000</option>\n              <option value="100000">$100,000</option>\n            </select>\n          </label>\n          <label>\n            <span>Sort</span>\n            <select id="sortFilter">\n              <option value="recommended">Recommended</option>\n              <option value="price-low">Price: Low to High</option>\n              <option value="price-high">Price: High to Low</option>\n              <option value="year-new">Newest Year</option>\n              <option value="miles-low">Mileage: Low to High</option>\n            </select>\n          </label>\n        </div>\n\n        <div class="inventory-summary" id="inventorySummary"></div>\n        <div class="vehicle-grid" id="vehicleGrid" aria-live="polite"></div>\n        <div class="load-more-wrap hidden" id="loadMoreWrap"><button class="button button-secondary" type="button" id="loadMoreButton">Load More Vehicles</button></div>\n        <div class="empty-state hidden" id="emptyState">\n          <h3>No vehicles match those filters.</h3>\n          <p>Change your filters or contact Peyton directly for help finding a vehicle.</p>\n          <a class="button button-primary" href="tel:{{ person.phone_tel }}">Call {{ person.phone_display }}</a>\n        </div>\n      </div>\n    </section>\n\n    <section class="certification-section">\n      <div class="shell">\n        <div class="section-heading simple">\n          <div>\n            <p class="eyebrow">Certification</p>\n            <h2>Certified Pre-Owned Coverage</h2>\n          </div>\n        </div>\n        <div class="cert-grid">\n          <article>\n            <h3>CarBravo Certified Pre-Owned</h3>\n            <p>12-month / 12,000-mile warranty.</p>\n          </article>\n          <article>\n            <h3>Cadillac Certified Pre-Owned</h3>\n            <p>12-month unlimited-mile bumper-to-bumper warranty.</p>\n          </article>\n        </div>\n        <p class="fine-print">Warranty coverage shown is based on the certification information provided for this site. Contact Peyton for vehicle eligibility, complete warranty terms, exclusions and current availability.</p>\n      </div>\n    </section>\n\n    <section class="contact-section" id="contact">\n      <div class="shell contact-layout">\n        <div>\n          <p class="eyebrow">Work With Peyton</p>\n          <h2>Questions about a vehicle?</h2>\n          <p>Contact me directly for additional information, vehicle videos, pricing details, availability, trade questions, or to schedule an appointment.</p>\n        </div>\n        <div class="contact-actions">\n          <a class="button button-primary" href="tel:{{ person.phone_tel }}">Call {{ person.phone_display }}</a>\n          <a class="button button-secondary light" href="sms:{{ person.phone_tel }}?body=Hi%20Peyton%2C%20I%27d%20like%20more%20information%20about%20a%20vehicle.">Send a Text</a>\n          <p>{{ person.address }}</p>\n          <p>Please ask for Peyton Gaskins when you call or visit.</p>\n        </div>\n      </div>\n    </section>\n  </main>\n\n  <footer>\n    <div class="shell footer-wrap">\n      <p>Peyton Gaskins | Jim Hudson Cadillac / Buick GMC</p>\n      <p>Vehicle information, price and availability are subject to change. Contact Peyton to confirm details before visiting.</p>\n    </div>\n  </footer>\n\n  <template id="vehicleTemplate">\n    <article class="vehicle-card">\n      <div class="vehicle-image-wrap">\n        <img class="vehicle-image" alt="" loading="lazy">\n        <span class="condition-badge"></span>\n      </div>\n      <div class="vehicle-body">\n        <p class="vehicle-dealer"></p>\n        <h3 class="vehicle-title"></h3>\n        <p class="vehicle-price"></p>\n        <div class="vehicle-meta"></div>\n        <p class="warranty-line hidden"></p>\n        <div class="vehicle-actions">\n          <a class="button button-primary detail-link" target="_blank" rel="noopener">View Vehicle</a>\n          <a class="button button-secondary text-link">Text Peyton</a>\n        </div>\n        <a class="call-line">Call Peyton: {{ person.phone_display }}</a>\n      </div>\n    </article>\n  </template>\n\n  <script>\n    window.SALES_CONTACT = {\n      name: {{ person.name|tojson }},\n      phoneDisplay: {{ person.phone_display|tojson }},\n      phoneTel: {{ person.phone_tel|tojson }}\n    };\n  </script>\n  <script src="/assets/app.js" defer></script>\n</body>\n</html>\n'
-STYLES_CSS = ':root {\n  --ink: #16202a;\n  --muted: #5e6872;\n  --line: #d9dee3;\n  --soft: #f4f6f8;\n  --navy: #10283f;\n  --navy-dark: #0b1b2a;\n  --white: #ffffff;\n  --max: 1240px;\n  --radius: 10px;\n}\n\n* { box-sizing: border-box; }\nhtml { scroll-behavior: smooth; }\nbody {\n  margin: 0;\n  font-family: Arial, Helvetica, sans-serif;\n  color: var(--ink);\n  background: var(--white);\n  line-height: 1.5;\n}\na { color: inherit; }\n.shell { width: min(var(--max), calc(100% - 40px)); margin: 0 auto; }\n.site-header {\n  position: sticky;\n  top: 0;\n  z-index: 20;\n  background: rgba(255,255,255,.97);\n  border-bottom: 1px solid var(--line);\n}\n.nav-wrap { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }\n.brand { text-decoration: none; display: flex; flex-direction: column; }\n.brand-name { font-size: 18px; font-weight: 700; letter-spacing: .01em; }\n.brand-sub { color: var(--muted); font-size: 13px; }\n.header-actions { display: flex; align-items: center; gap: 18px; }\n.plain-link { text-decoration: none; font-weight: 700; font-size: 14px; }\n.button {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 46px;\n  padding: 0 20px;\n  border-radius: 6px;\n  border: 1px solid var(--navy);\n  font-weight: 700;\n  font-size: 14px;\n  text-decoration: none;\n  cursor: pointer;\n}\n.button.compact { min-height: 40px; padding: 0 16px; }\n.button-primary { background: var(--navy); color: var(--white); }\n.button-primary:hover { background: var(--navy-dark); }\n.button-secondary { background: var(--white); color: var(--navy); }\n.button-secondary:hover { background: var(--soft); }\n.button-secondary.light { border-color: var(--white); color: var(--white); background: transparent; }\n.hero { padding: 72px 0; background: linear-gradient(180deg, #f7f8fa, #fff); border-bottom: 1px solid var(--line); }\n.hero-grid { display: grid; grid-template-columns: 1.45fr .75fr; gap: 64px; align-items: center; }\n.eyebrow { margin: 0 0 10px; text-transform: uppercase; letter-spacing: .11em; font-size: 12px; font-weight: 700; color: var(--muted); }\nh1, h2, h3 { line-height: 1.12; margin-top: 0; }\nh1 { font-size: clamp(38px, 5vw, 64px); max-width: 850px; margin-bottom: 22px; letter-spacing: -.035em; }\nh2 { font-size: clamp(28px, 3vw, 40px); margin-bottom: 10px; letter-spacing: -.02em; }\nh3 { font-size: 20px; margin-bottom: 8px; }\n.hero-copy { max-width: 760px; font-size: 18px; color: var(--muted); margin: 0 0 28px; }\n.hero-actions, .vehicle-actions { display: flex; flex-wrap: wrap; gap: 10px; }\n.contact-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--white); padding: 30px; box-shadow: 0 8px 30px rgba(16,40,63,.07); }\n.contact-card p { margin: 4px 0; }\n.contact-name { font-size: 23px; font-weight: 700; }\n.phone { display: inline-block; margin: 14px 0; font-size: 24px; font-weight: 700; color: var(--navy); text-decoration: none; }\n.contact-copy { color: var(--muted); font-size: 14px; }\n.inventory-section { padding: 66px 0 84px; }\n.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 30px; margin-bottom: 26px; }\n.section-heading.simple { margin-bottom: 22px; }\n.section-heading h2 { margin-bottom: 0; }\n.inventory-status { margin: 0; color: var(--muted); font-size: 13px; }\n.filters { display: grid; grid-template-columns: 2fr repeat(4, 1fr); gap: 12px; padding: 18px; background: var(--soft); border: 1px solid var(--line); border-radius: var(--radius); }\n.filters label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); }\n.filters input, .filters select { width: 100%; min-height: 44px; border: 1px solid #c8cfd6; border-radius: 5px; background: var(--white); color: var(--ink); padding: 0 12px; font-size: 14px; }\n.inventory-summary { min-height: 26px; margin: 18px 0; color: var(--muted); font-size: 14px; }\n.vehicle-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }\n.vehicle-card { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--white); display: flex; flex-direction: column; min-width: 0; }\n.vehicle-image-wrap { position: relative; aspect-ratio: 4 / 3; background: #eef1f4; overflow: hidden; }\n.vehicle-image { width: 100%; height: 100%; object-fit: cover; display: block; }\n.vehicle-image.is-empty { object-fit: contain; padding: 18%; opacity: .4; }\n.condition-badge { position: absolute; top: 12px; left: 12px; max-width: calc(100% - 24px); background: var(--navy); color: var(--white); padding: 6px 9px; border-radius: 4px; font-size: 11px; font-weight: 700; }\n.vehicle-body { padding: 20px; display: flex; flex-direction: column; flex: 1; }\n.vehicle-dealer { margin: 0 0 6px; color: var(--muted); font-size: 12px; font-weight: 700; }\n.vehicle-title { font-size: 21px; margin-bottom: 14px; }\n.vehicle-price { font-size: 25px; font-weight: 700; margin: 0 0 15px; }\n.price-label { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }\n.vehicle-meta { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 12px 0; margin-bottom: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; color: var(--muted); font-size: 12px; }\n.vehicle-meta span { overflow-wrap: anywhere; }\n.warranty-line { margin: 0 0 15px; font-size: 13px; font-weight: 700; }\n.vehicle-actions { margin-top: auto; }\n.vehicle-actions .button { flex: 1 1 130px; }\n.call-line { display: block; text-align: center; margin-top: 12px; color: var(--navy); font-size: 13px; font-weight: 700; text-decoration: none; }\n.empty-state { text-align: center; padding: 60px 20px; border: 1px solid var(--line); border-radius: var(--radius); }\n.hidden { display: none !important; }\n.certification-section { background: var(--soft); padding: 64px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }\n.cert-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }\n.cert-grid article { background: var(--white); padding: 26px; border: 1px solid var(--line); border-radius: var(--radius); }\n.cert-grid p { margin: 0; color: var(--muted); }\n.fine-print { color: var(--muted); font-size: 12px; margin: 18px 0 0; }\n.contact-section { background: var(--navy); color: var(--white); padding: 68px 0; }\n.contact-section .eyebrow { color: #b9c8d5; }\n.contact-layout { display: grid; grid-template-columns: 1.2fr .8fr; gap: 80px; align-items: center; }\n.contact-layout > div > p:not(.eyebrow) { color: #d4dde5; max-width: 700px; }\n.contact-actions { display: flex; flex-wrap: wrap; gap: 10px; }\n.contact-actions p { flex-basis: 100%; margin: 7px 0 0; font-size: 13px; }\nfooter { background: var(--navy-dark); color: #bcc8d1; padding: 28px 0; font-size: 12px; }\n.footer-wrap { display: flex; justify-content: space-between; gap: 30px; }\n.footer-wrap p { margin: 0; max-width: 660px; }\n@media (max-width: 980px) {\n  .hero-grid, .contact-layout { grid-template-columns: 1fr; gap: 36px; }\n  .filters { grid-template-columns: 1fr 1fr 1fr; }\n  .search-field { grid-column: span 2; }\n  .vehicle-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n}\n@media (max-width: 680px) {\n  .shell { width: min(100% - 24px, var(--max)); }\n  .site-header { position: static; }\n  .nav-wrap { min-height: 82px; }\n  .brand-sub, .plain-link { display: none; }\n  .hero { padding: 46px 0; }\n  h1 { font-size: 39px; }\n  .header-actions { gap: 8px; }\n  .filters { grid-template-columns: 1fr 1fr; }\n  .search-field { grid-column: 1 / -1; }\n  .vehicle-grid, .cert-grid { grid-template-columns: 1fr; }\n  .section-heading { align-items: start; flex-direction: column; gap: 8px; }\n  .footer-wrap { flex-direction: column; }\n}\n\n.load-more-wrap { text-align: center; margin: 28px 0 8px; }\n.load-more-wrap.hidden { display: none; }\n'
-APP_JS = 'const state = { all: [], filtered: [], visibleLimit: 60 };\nconst $ = (id) => document.getElementById(id);\n\nfunction money(value) {\n  if (value === null || value === undefined || Number.isNaN(Number(value))) return \'Contact for Price\';\n  return new Intl.NumberFormat(\'en-US\', { style: \'currency\', currency: \'USD\', maximumFractionDigits: 0 }).format(value);\n}\nfunction number(value) {\n  if (value === null || value === undefined || Number.isNaN(Number(value))) return \'—\';\n  return new Intl.NumberFormat(\'en-US\').format(value);\n}\nfunction escapeSms(text) { return encodeURIComponent(text); }\n\nfunction populateMakes() {\n  const select = $(\'makeFilter\');\n  select.innerHTML = \'<option value="all">All Makes</option>\';\n  const makes = [...new Set(state.all.map(v => v.make).filter(Boolean))].sort((a,b) => a.localeCompare(b));\n  for (const make of makes) {\n    const option = document.createElement(\'option\');\n    option.value = make.toLowerCase();\n    option.textContent = make;\n    select.appendChild(option);\n  }\n}\n\nfunction applyFilters(resetLimit = true) {\n  if (resetLimit) state.visibleLimit = 60;\n  const q = $(\'searchInput\').value.trim().toLowerCase();\n  const condition = $(\'conditionFilter\').value;\n  const make = $(\'makeFilter\').value;\n  const maxPrice = $(\'priceFilter\').value;\n  const sort = $(\'sortFilter\').value;\n\n  let rows = state.all.filter(v => {\n    const haystack = [v.title, v.make, v.model, v.trim, v.stock, v.vin, v.dealer].join(\' \').toLowerCase();\n    if (q && !haystack.includes(q)) return false;\n    if (condition !== \'all\' && v.condition !== condition) return false;\n    if (make !== \'all\' && String(v.make || \'\').toLowerCase() !== make) return false;\n    if (maxPrice !== \'all\' && v.price !== null && Number(v.price) > Number(maxPrice)) return false;\n    if (maxPrice !== \'all\' && v.price === null) return false;\n    return true;\n  });\n\n  rows.sort((a,b) => {\n    if (sort === \'price-low\') return (a.price ?? Infinity) - (b.price ?? Infinity);\n    if (sort === \'price-high\') return (b.price ?? -1) - (a.price ?? -1);\n    if (sort === \'year-new\') return Number(b.year || 0) - Number(a.year || 0);\n    if (sort === \'miles-low\') return (a.mileage ?? Infinity) - (b.mileage ?? Infinity);\n    const priority = { new: 0, certified: 1, preowned: 2 };\n    return (priority[a.condition] ?? 9) - (priority[b.condition] ?? 9) || Number(b.year || 0) - Number(a.year || 0) || String(a.make || \'\').localeCompare(String(b.make || \'\'));\n  });\n  state.filtered = rows;\n  renderVehicles();\n}\n\nfunction placeholderDataUrl() {\n  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="#eef1f4"/><text x="400" y="300" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="28" fill="#697580">Vehicle photo</text></svg>`;\n  return \'data:image/svg+xml;charset=utf-8,\' + encodeURIComponent(svg);\n}\n\nfunction renderVehicles() {\n  const grid = $(\'vehicleGrid\');\n  const template = $(\'vehicleTemplate\');\n  const empty = $(\'emptyState\');\n  const loadMoreWrap = $(\'loadMoreWrap\');\n  grid.innerHTML = \'\';\n\n  const visibleRows = state.filtered.slice(0, state.visibleLimit);\n  const shown = visibleRows.length;\n  const total = state.filtered.length;\n  $(\'inventorySummary\').textContent = total === 0 ? \'0 vehicles shown\' : `Showing ${shown} of ${total} vehicles`;\n  empty.classList.toggle(\'hidden\', total !== 0);\n  loadMoreWrap.classList.toggle(\'hidden\', shown >= total || total === 0);\n\n  for (const v of visibleRows) {\n    const node = template.content.cloneNode(true);\n    const img = node.querySelector(\'.vehicle-image\');\n    img.src = v.image || placeholderDataUrl();\n    img.alt = v.title || \'Vehicle\';\n    if (!v.image) img.classList.add(\'is-empty\');\n    img.addEventListener(\'error\', () => { img.src = placeholderDataUrl(); img.classList.add(\'is-empty\'); }, { once: true });\n\n    node.querySelector(\'.condition-badge\').textContent = v.condition_label || \'Inventory\';\n    node.querySelector(\'.vehicle-dealer\').textContent = v.dealer || \'\';\n    node.querySelector(\'.vehicle-title\').textContent = v.title || [v.year, v.make, v.model, v.trim].filter(Boolean).join(\' \');\n\n    const price = node.querySelector(\'.vehicle-price\');\n    price.innerHTML = v.price !== null\n      ? `<span class="price-label">${v.price_label || \'Price\'}</span>${money(v.price)}`\n      : \'Contact for Price\';\n\n    const meta = node.querySelector(\'.vehicle-meta\');\n    const parts = [];\n    if (v.mileage !== null && v.mileage !== undefined) parts.push(`<span>Mileage: ${number(v.mileage)}</span>`);\n    if (v.stock) parts.push(`<span>Stock: ${v.stock}</span>`);\n    if (v.vin) parts.push(`<span>VIN: ${v.vin}</span>`);\n    meta.innerHTML = parts.join(\'\');\n\n    const warranty = node.querySelector(\'.warranty-line\');\n    if (v.warranty) { warranty.textContent = v.warranty; warranty.classList.remove(\'hidden\'); }\n\n    const detail = node.querySelector(\'.detail-link\');\n    detail.href = v.url;\n    const sms = node.querySelector(\'.text-link\');\n    const message = `Hi Peyton, I\'m interested in ${v.title}${v.stock ? ` (stock ${v.stock})` : \'\'}${v.vin ? ` (VIN ${v.vin})` : \'\'}. Can you send me more information, pricing details, and confirm availability?`;\n    sms.href = `sms:${window.SALES_CONTACT.phoneTel}?body=${escapeSms(message)}`;\n    node.querySelector(\'.call-line\').href = `tel:${window.SALES_CONTACT.phoneTel}`;\n    grid.appendChild(node);\n  }\n}\n\nasync function loadInventory() {\n  const status = $(\'inventoryStatus\');\n  try {\n    const response = await fetch(\'/api/inventory\', { headers: { \'Accept\': \'application/json\' } });\n    if (!response.ok) throw new Error(\'Inventory request failed\');\n    const data = await response.json();\n    state.all = Array.isArray(data.vehicles) ? data.vehicles : [];\n    populateMakes();\n    applyFilters(true);\n\n    if (data.updated_at) {\n      const date = new Date(data.updated_at);\n      status.textContent = `Inventory checked ${date.toLocaleString()}`;\n    } else {\n      status.textContent = \'Contact Peyton to confirm current availability.\';\n    }\n    if (data.errors && data.errors.length) {\n      status.textContent += \' One or more inventory sources may be temporarily unavailable.\';\n    }\n  } catch (error) {\n    status.textContent = \'Current inventory could not be loaded. Contact Peyton directly for availability.\';\n    state.all = [];\n    state.filtered = [];\n    renderVehicles();\n  }\n}\n\n[\'searchInput\',\'conditionFilter\',\'makeFilter\',\'priceFilter\',\'sortFilter\'].forEach(id => {\n  $(id).addEventListener(id === \'searchInput\' ? \'input\' : \'change\', () => applyFilters(true));\n});\n$(\'loadMoreButton\').addEventListener(\'click\', () => {\n  state.visibleLimit += 60;\n  renderVehicles();\n});\nloadInventory();\n'
+INDEX_HTML = '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n  <meta name="description" content="Browse new, certified pre-owned, and used vehicle inventory with Peyton Gaskins at Jim Hudson Cadillac / Buick GMC in Columbia, South Carolina.">\n  <title>Peyton Gaskins | Jim Hudson Cadillac / Buick GMC</title>\n  <link rel="preconnect" href="https://vehicle-images.carscommerce.inc">\n  <link rel="stylesheet" href="/assets/styles.css">\n</head>\n<body>\n  <header class="site-header">\n    <div class="shell nav-wrap">\n      <a class="brand" href="#top" aria-label="Peyton Gaskins inventory home">\n        <span class="brand-name">Peyton Gaskins</span>\n        <span class="brand-sub">Jim Hudson Cadillac / Buick GMC</span>\n      </a>\n      <div class="header-actions">\n        <a class="plain-link" href="#inventory">Inventory</a>\n        <a class="button button-primary compact" href="tel:{{ person.phone_tel }}">Call {{ person.phone_display }}</a>\n      </div>\n    </div>\n  </header>\n\n  <main id="top">\n    <section class="hero">\n      <div class="shell hero-grid">\n        <div>\n          <p class="eyebrow">Columbia, South Carolina</p>\n          <h1>Find the right vehicle. Work directly with Peyton.</h1>\n          <p class="hero-copy">Browse current vehicles with the essentials: price, mileage, VIN and available dealership photos. Call or text Peyton to confirm availability and schedule an appointment.</p>\n          <div class="hero-actions">\n            <a class="button button-primary" href="#inventory">Browse Inventory</a>\n            <a class="button button-secondary" href="sms:{{ person.phone_tel }}?body=Hi%20Peyton%2C%20I%27m%20interested%20in%20a%20vehicle%20I%20saw%20on%20your%20website.">Text Peyton</a>\n          </div>\n        </div>\n        <aside class="contact-card">\n          <p class="contact-name">{{ person.name }}</p>\n          <p>{{ person.title }}</p>\n          <p>{{ person.dealership }}</p>\n          <a class="phone" href="tel:{{ person.phone_tel }}">{{ person.phone_display }}</a>\n          <p class="contact-copy">Contact me directly for additional information, vehicle videos, pricing details, availability, or to schedule an appointment. Please ask for Peyton Gaskins when calling or visiting the dealership.</p>\n        </aside>\n      </div>\n    </section>\n\n    <section class="inventory-section" id="inventory">\n      <div class="shell">\n        <div class="section-heading">\n          <div>\n            <p class="eyebrow">Current Inventory</p>\n            <h2>New and Pre-Owned Vehicles</h2>\n          </div>\n          <p class="inventory-status" id="inventoryStatus">Loading current inventory...</p>\n        </div>\n\n        <div class="filters" aria-label="Inventory filters">\n          <label class="search-field">\n            <span>Search</span>\n            <input id="searchInput" type="search" placeholder="Year, make, model, stock or VIN" autocomplete="off">\n          </label>\n          <label>\n            <span>Type</span>\n            <select id="conditionFilter">\n              <option value="all">All Inventory</option>\n              <option value="new">New</option>\n              <option value="certified">Certified Pre-Owned</option>\n              <option value="preowned">Pre-Owned / Used</option>\n            </select>\n          </label>\n          <label>\n            <span>Make</span>\n            <select id="makeFilter"><option value="all">All Makes</option></select>\n          </label>\n          <label>\n            <span>Maximum Price</span>\n            <select id="priceFilter">\n              <option value="all">Any Price</option>\n              <option value="30000">$30,000</option>\n              <option value="40000">$40,000</option>\n              <option value="50000">$50,000</option>\n              <option value="60000">$60,000</option>\n              <option value="75000">$75,000</option>\n              <option value="100000">$100,000</option>\n            </select>\n          </label>\n          <label>\n            <span>Sort</span>\n            <select id="sortFilter">\n              <option value="recommended">Recommended</option>\n              <option value="price-low">Price: Low to High</option>\n              <option value="price-high">Price: High to Low</option>\n              <option value="year-new">Newest Year</option>\n              <option value="miles-low">Mileage: Low to High</option>\n            </select>\n          </label>\n        </div>\n\n        <div class="inventory-summary" id="inventorySummary"></div>\n        <div class="vehicle-grid" id="vehicleGrid" aria-live="polite"></div>\n        <div class="load-more-wrap hidden" id="loadMoreWrap"><button class="button button-secondary" type="button" id="loadMoreButton">Load More Vehicles</button></div>\n        <div class="empty-state hidden" id="emptyState">\n          <h3>No vehicles match those filters.</h3>\n          <p>Change your filters or contact Peyton directly for help finding a vehicle.</p>\n          <a class="button button-primary" href="tel:{{ person.phone_tel }}">Call {{ person.phone_display }}</a>\n        </div>\n      </div>\n    </section>\n\n    <section class="certification-section">\n      <div class="shell">\n        <div class="section-heading simple">\n          <div>\n            <p class="eyebrow">Certification</p>\n            <h2>Certified Pre-Owned Coverage</h2>\n          </div>\n        </div>\n        <div class="cert-grid">\n          <article>\n            <h3>CarBravo Certified Pre-Owned</h3>\n            <p>12-month / 12,000-mile warranty.</p>\n          </article>\n          <article>\n            <h3>Cadillac Certified Pre-Owned</h3>\n            <p>12-month unlimited-mile bumper-to-bumper warranty.</p>\n          </article>\n        </div>\n        <p class="fine-print">Warranty coverage shown is based on the certification information provided for this site. Contact Peyton for vehicle eligibility, complete warranty terms, exclusions and current availability.</p>\n      </div>\n    </section>\n\n    <section class="contact-section" id="contact">\n      <div class="shell contact-layout">\n        <div>\n          <p class="eyebrow">Work With Peyton</p>\n          <h2>Questions about a vehicle?</h2>\n          <p>Contact me directly for additional information, vehicle videos, pricing details, availability, trade questions, or to schedule an appointment.</p>\n        </div>\n        <div class="contact-actions">\n          <a class="button button-primary" href="tel:{{ person.phone_tel }}">Call {{ person.phone_display }}</a>\n          <a class="button button-secondary light" href="sms:{{ person.phone_tel }}?body=Hi%20Peyton%2C%20I%27d%20like%20more%20information%20about%20a%20vehicle.">Send a Text</a>\n          <p>{{ person.address }}</p>\n          <p>Please ask for Peyton Gaskins when you call or visit.</p>\n        </div>\n      </div>\n    </section>\n  </main>\n\n  <footer>\n    <div class="shell footer-wrap">\n      <p>Peyton Gaskins | Jim Hudson Cadillac / Buick GMC</p>\n      <p>Vehicle information, price and availability are subject to change. Contact Peyton to confirm details before visiting.</p>\n    </div>\n  </footer>\n\n  <template id="vehicleTemplate">\n    <article class="vehicle-card">\n      <div class="vehicle-image-wrap">\n        <img class="vehicle-image" alt="" loading="lazy">\n        <span class="condition-badge"></span>\n      </div>\n      <div class="vehicle-body">\n        <p class="vehicle-dealer"></p>\n        <h3 class="vehicle-title"></h3>\n        <p class="vehicle-price"></p>\n        <div class="vehicle-meta"></div>\n        <p class="warranty-line hidden"></p>\n        <div class="vehicle-actions">\n          <a class="button button-primary call-button">Call Peyton</a>\n          <a class="button button-secondary text-link">Text Peyton</a>\n        </div>\n        <p class="availability-line">Contact Peyton to confirm availability or schedule an appointment.</p>\n        <a class="detail-link original-link" target="_blank" rel="noopener">Original dealer listing</a>\n      </div>\n    </article>\n  </template>\n\n  <script>\n    window.SALES_CONTACT = {\n      name: {{ person.name|tojson }},\n      phoneDisplay: {{ person.phone_display|tojson }},\n      phoneTel: {{ person.phone_tel|tojson }}\n    };\n  </script>\n  <script src="/assets/app.js" defer></script>\n</body>\n</html>\n'
+STYLES_CSS = ':root {\n  --ink: #16202a;\n  --muted: #5e6872;\n  --line: #d9dee3;\n  --soft: #f4f6f8;\n  --navy: #10283f;\n  --navy-dark: #0b1b2a;\n  --white: #ffffff;\n  --max: 1240px;\n  --radius: 10px;\n}\n\n* { box-sizing: border-box; }\nhtml { scroll-behavior: smooth; }\nbody {\n  margin: 0;\n  font-family: Arial, Helvetica, sans-serif;\n  color: var(--ink);\n  background: var(--white);\n  line-height: 1.5;\n}\na { color: inherit; }\n.shell { width: min(var(--max), calc(100% - 40px)); margin: 0 auto; }\n.site-header {\n  position: sticky;\n  top: 0;\n  z-index: 20;\n  background: rgba(255,255,255,.97);\n  border-bottom: 1px solid var(--line);\n}\n.nav-wrap { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }\n.brand { text-decoration: none; display: flex; flex-direction: column; }\n.brand-name { font-size: 18px; font-weight: 700; letter-spacing: .01em; }\n.brand-sub { color: var(--muted); font-size: 13px; }\n.header-actions { display: flex; align-items: center; gap: 18px; }\n.plain-link { text-decoration: none; font-weight: 700; font-size: 14px; }\n.button {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 46px;\n  padding: 0 20px;\n  border-radius: 6px;\n  border: 1px solid var(--navy);\n  font-weight: 700;\n  font-size: 14px;\n  text-decoration: none;\n  cursor: pointer;\n}\n.button.compact { min-height: 40px; padding: 0 16px; }\n.button-primary { background: var(--navy); color: var(--white); }\n.button-primary:hover { background: var(--navy-dark); }\n.button-secondary { background: var(--white); color: var(--navy); }\n.button-secondary:hover { background: var(--soft); }\n.button-secondary.light { border-color: var(--white); color: var(--white); background: transparent; }\n.hero { padding: 72px 0; background: linear-gradient(180deg, #f7f8fa, #fff); border-bottom: 1px solid var(--line); }\n.hero-grid { display: grid; grid-template-columns: 1.45fr .75fr; gap: 64px; align-items: center; }\n.eyebrow { margin: 0 0 10px; text-transform: uppercase; letter-spacing: .11em; font-size: 12px; font-weight: 700; color: var(--muted); }\nh1, h2, h3 { line-height: 1.12; margin-top: 0; }\nh1 { font-size: clamp(38px, 5vw, 64px); max-width: 850px; margin-bottom: 22px; letter-spacing: -.035em; }\nh2 { font-size: clamp(28px, 3vw, 40px); margin-bottom: 10px; letter-spacing: -.02em; }\nh3 { font-size: 20px; margin-bottom: 8px; }\n.hero-copy { max-width: 760px; font-size: 18px; color: var(--muted); margin: 0 0 28px; }\n.hero-actions, .vehicle-actions { display: flex; flex-wrap: wrap; gap: 10px; }\n.contact-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--white); padding: 30px; box-shadow: 0 8px 30px rgba(16,40,63,.07); }\n.contact-card p { margin: 4px 0; }\n.contact-name { font-size: 23px; font-weight: 700; }\n.phone { display: inline-block; margin: 14px 0; font-size: 24px; font-weight: 700; color: var(--navy); text-decoration: none; }\n.contact-copy { color: var(--muted); font-size: 14px; }\n.inventory-section { padding: 66px 0 84px; }\n.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 30px; margin-bottom: 26px; }\n.section-heading.simple { margin-bottom: 22px; }\n.section-heading h2 { margin-bottom: 0; }\n.inventory-status { margin: 0; color: var(--muted); font-size: 13px; }\n.filters { display: grid; grid-template-columns: 2fr repeat(4, 1fr); gap: 12px; padding: 18px; background: var(--soft); border: 1px solid var(--line); border-radius: var(--radius); }\n.filters label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); }\n.filters input, .filters select { width: 100%; min-height: 44px; border: 1px solid #c8cfd6; border-radius: 5px; background: var(--white); color: var(--ink); padding: 0 12px; font-size: 14px; }\n.inventory-summary { min-height: 26px; margin: 18px 0; color: var(--muted); font-size: 14px; }\n.vehicle-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }\n.vehicle-card { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--white); display: flex; flex-direction: column; min-width: 0; }\n.vehicle-image-wrap { position: relative; aspect-ratio: 4 / 3; background: #eef1f4; overflow: hidden; }\n.vehicle-image { width: 100%; height: 100%; object-fit: cover; display: block; }\n.vehicle-image.is-empty { object-fit: contain; padding: 18%; opacity: .4; }\n.condition-badge { position: absolute; top: 12px; left: 12px; max-width: calc(100% - 24px); background: var(--navy); color: var(--white); padding: 6px 9px; border-radius: 4px; font-size: 11px; font-weight: 700; }\n.vehicle-body { padding: 20px; display: flex; flex-direction: column; flex: 1; }\n.vehicle-dealer { margin: 0 0 6px; color: var(--muted); font-size: 12px; font-weight: 700; }\n.vehicle-title { font-size: 21px; margin-bottom: 14px; }\n.vehicle-price { font-size: 25px; font-weight: 700; margin: 0 0 15px; }\n.price-label { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }\n.vehicle-meta { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 12px 0; margin-bottom: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; color: var(--muted); font-size: 12px; }\n.vehicle-meta span { overflow-wrap: anywhere; }\n.warranty-line { margin: 0 0 15px; font-size: 13px; font-weight: 700; }\n.vehicle-actions { margin-top: auto; }\n.vehicle-actions .button { flex: 1 1 130px; }\n.call-line { display: block; text-align: center; margin-top: 12px; color: var(--navy); font-size: 13px; font-weight: 700; text-decoration: none; }\n.empty-state { text-align: center; padding: 60px 20px; border: 1px solid var(--line); border-radius: var(--radius); }\n.hidden { display: none !important; }\n.certification-section { background: var(--soft); padding: 64px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }\n.cert-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }\n.cert-grid article { background: var(--white); padding: 26px; border: 1px solid var(--line); border-radius: var(--radius); }\n.cert-grid p { margin: 0; color: var(--muted); }\n.fine-print { color: var(--muted); font-size: 12px; margin: 18px 0 0; }\n.contact-section { background: var(--navy); color: var(--white); padding: 68px 0; }\n.contact-section .eyebrow { color: #b9c8d5; }\n.contact-layout { display: grid; grid-template-columns: 1.2fr .8fr; gap: 80px; align-items: center; }\n.contact-layout > div > p:not(.eyebrow) { color: #d4dde5; max-width: 700px; }\n.contact-actions { display: flex; flex-wrap: wrap; gap: 10px; }\n.contact-actions p { flex-basis: 100%; margin: 7px 0 0; font-size: 13px; }\nfooter { background: var(--navy-dark); color: #bcc8d1; padding: 28px 0; font-size: 12px; }\n.footer-wrap { display: flex; justify-content: space-between; gap: 30px; }\n.footer-wrap p { margin: 0; max-width: 660px; }\n.availability-line { margin: 12px 0 7px; color: var(--muted); font-size: 13px; }\n.original-link { display: inline-block; font-size: 12px; color: var(--muted); }\n@media (max-width: 980px) {\n  .hero-grid, .contact-layout { grid-template-columns: 1fr; gap: 36px; }\n  .filters { grid-template-columns: 1fr 1fr 1fr; }\n  .search-field { grid-column: span 2; }\n  .vehicle-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n}\n@media (max-width: 680px) {\n  .shell { width: min(100% - 24px, var(--max)); }\n  .site-header { position: static; }\n  .nav-wrap { min-height: 82px; }\n  .brand-sub, .plain-link { display: none; }\n  .hero { padding: 46px 0; }\n  h1 { font-size: 39px; }\n  .header-actions { gap: 8px; }\n  .filters { grid-template-columns: 1fr 1fr; }\n  .search-field { grid-column: 1 / -1; }\n  .vehicle-grid, .cert-grid { grid-template-columns: 1fr; }\n  .section-heading { align-items: start; flex-direction: column; gap: 8px; }\n  .footer-wrap { flex-direction: column; }\n}\n\n.load-more-wrap { text-align: center; margin: 28px 0 8px; }\n.load-more-wrap.hidden { display: none; }\n'
+APP_JS = r'''const state = { all: [], filtered: [], visibleLimit: 60 };
+const detailState = { active: 0, maxActive: 6, queue: [], queued: new Set(), completed: new Set() };
+const $ = (id) => document.getElementById(id);
+
+function money(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return 'Contact for Price';
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value);
+}
+function number(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
+  return new Intl.NumberFormat('en-US').format(value);
+}
+function escapeSms(text) { return encodeURIComponent(text); }
+
+function populateMakes() {
+  const select = $('makeFilter');
+  select.innerHTML = '<option value="all">All Makes</option>';
+  const makes = [...new Set(state.all.map(v => v.make).filter(Boolean))].sort((a,b) => a.localeCompare(b));
+  for (const make of makes) {
+    const option = document.createElement('option');
+    option.value = make.toLowerCase();
+    option.textContent = make;
+    select.appendChild(option);
+  }
+}
+
+function applyFilters(resetLimit = true) {
+  if (resetLimit) state.visibleLimit = 60;
+  const q = $('searchInput').value.trim().toLowerCase();
+  const condition = $('conditionFilter').value;
+  const make = $('makeFilter').value;
+  const maxPrice = $('priceFilter').value;
+  const sort = $('sortFilter').value;
+
+  let rows = state.all.filter(v => {
+    const haystack = [v.title, v.make, v.model, v.trim, v.stock, v.vin, v.dealer].join(' ').toLowerCase();
+    if (q && !haystack.includes(q)) return false;
+    if (condition !== 'all' && v.condition !== condition) return false;
+    if (make !== 'all' && String(v.make || '').toLowerCase() !== make) return false;
+    if (maxPrice !== 'all' && v.price !== null && Number(v.price) > Number(maxPrice)) return false;
+    if (maxPrice !== 'all' && v.price === null) return false;
+    return true;
+  });
+
+  rows.sort((a,b) => {
+    if (sort === 'price-low') return (a.price ?? Infinity) - (b.price ?? Infinity);
+    if (sort === 'price-high') return (b.price ?? -1) - (a.price ?? -1);
+    if (sort === 'year-new') return Number(b.year || 0) - Number(a.year || 0);
+    if (sort === 'miles-low') return (a.mileage ?? Infinity) - (b.mileage ?? Infinity);
+    const priority = { new: 0, certified: 1, preowned: 2 };
+    return (priority[a.condition] ?? 9) - (priority[b.condition] ?? 9)
+      || Number(b.year || 0) - Number(a.year || 0)
+      || String(a.make || '').localeCompare(String(b.make || ''));
+  });
+  state.filtered = rows;
+  renderVehicles();
+}
+
+function placeholderDataUrl() {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="#eef1f4"/><text x="400" y="300" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="28" fill="#697580">Vehicle photo</text></svg>`;
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+function applyVehicleToCard(card, v) {
+  if (!card) return;
+  card.dataset.vin = v.vin || '';
+
+  const img = card.querySelector('.vehicle-image');
+  const imageUrl = v.image || (Array.isArray(v.images) && v.images.length ? v.images[0] : '');
+  img.src = imageUrl || placeholderDataUrl();
+  img.alt = v.title || 'Vehicle';
+  img.classList.toggle('is-empty', !imageUrl);
+  img.onerror = () => { img.onerror = null; img.src = placeholderDataUrl(); img.classList.add('is-empty'); };
+
+  card.querySelector('.condition-badge').textContent = v.condition_label || 'Inventory';
+  card.querySelector('.vehicle-dealer').textContent = v.dealer || '';
+  card.querySelector('.vehicle-title').textContent = v.title || [v.year, v.make, v.model, v.trim].filter(Boolean).join(' ');
+
+  const price = card.querySelector('.vehicle-price');
+  price.innerHTML = v.price !== null
+    ? `<span class="price-label">${v.price_label || 'Price'}</span>${money(v.price)}`
+    : 'Contact for Price';
+
+  const meta = card.querySelector('.vehicle-meta');
+  const parts = [];
+  parts.push(`<span>Mileage: ${v.mileage !== null && v.mileage !== undefined ? number(v.mileage) : 'Contact Peyton'}</span>`);
+  if (v.vin) parts.push(`<span>VIN: ${v.vin}</span>`);
+  meta.innerHTML = parts.join('');
+
+  const warranty = card.querySelector('.warranty-line');
+  warranty.textContent = v.warranty || '';
+  warranty.classList.toggle('hidden', !v.warranty);
+
+  const detail = card.querySelector('.detail-link');
+  detail.href = v.url;
+  const call = card.querySelector('.call-button');
+  call.href = `tel:${window.SALES_CONTACT.phoneTel}`;
+  const sms = card.querySelector('.text-link');
+  const message = `Hi Peyton, I'm interested in ${v.title}${v.stock ? ` (stock ${v.stock})` : ''}${v.vin ? ` (VIN ${v.vin})` : ''}. Can you confirm availability and help me schedule an appointment?`;
+  sms.href = `sms:${window.SALES_CONTACT.phoneTel}?body=${escapeSms(message)}`;
+}
+
+function needsDetail(v) {
+  if (!v || !v.vin) return false;
+  if (!v.image && !(Array.isArray(v.images) && v.images.length)) return true;
+  if (v.price === null || v.price === undefined) return true;
+  if (!v.stock) return true;
+  if (v.condition !== 'new' && (v.mileage === null || v.mileage === undefined)) return true;
+  return false;
+}
+
+function queueVehicleDetail(v) {
+  if (!needsDetail(v) || detailState.completed.has(v.vin) || detailState.queued.has(v.vin)) return;
+  detailState.queue.push(v);
+  detailState.queued.add(v.vin);
+  pumpVehicleDetails();
+}
+
+function pumpVehicleDetails() {
+  while (detailState.active < detailState.maxActive && detailState.queue.length) {
+    const v = detailState.queue.shift();
+    detailState.queued.delete(v.vin);
+    detailState.active += 1;
+    fetch(`/api/vehicle-detail?vin=${encodeURIComponent(v.vin)}`, { headers: { 'Accept': 'application/json' } })
+      .then(response => response.ok ? response.json() : null)
+      .then(data => {
+        if (!data || !data.vehicle) return;
+        const updated = data.vehicle;
+        const target = state.all.find(row => row.vin === updated.vin);
+        if (target) Object.assign(target, updated);
+        const filteredTarget = state.filtered.find(row => row.vin === updated.vin);
+        if (filteredTarget && filteredTarget !== target) Object.assign(filteredTarget, updated);
+        const card = document.querySelector(`.vehicle-card[data-vin="${updated.vin}"]`);
+        applyVehicleToCard(card, updated);
+      })
+      .catch(() => {})
+      .finally(() => {
+        detailState.completed.add(v.vin);
+        detailState.active -= 1;
+        pumpVehicleDetails();
+      });
+  }
+}
+
+function renderVehicles() {
+  const grid = $('vehicleGrid');
+  const template = $('vehicleTemplate');
+  const empty = $('emptyState');
+  const loadMoreWrap = $('loadMoreWrap');
+  grid.innerHTML = '';
+
+  const visibleRows = state.filtered.slice(0, state.visibleLimit);
+  const shown = visibleRows.length;
+  const total = state.filtered.length;
+  $('inventorySummary').textContent = total === 0 ? '0 vehicles shown' : `Showing ${shown} of ${total} vehicles`;
+  empty.classList.toggle('hidden', total !== 0);
+  loadMoreWrap.classList.toggle('hidden', shown >= total || total === 0);
+
+  for (const v of visibleRows) {
+    const fragment = template.content.cloneNode(true);
+    const card = fragment.querySelector('.vehicle-card');
+    applyVehicleToCard(card, v);
+    grid.appendChild(fragment);
+    queueVehicleDetail(v);
+  }
+}
+
+async function loadInventory() {
+  const status = $('inventoryStatus');
+  try {
+    const response = await fetch('/api/inventory', { headers: { 'Accept': 'application/json' } });
+    if (!response.ok) throw new Error('Inventory request failed');
+    const data = await response.json();
+    state.all = Array.isArray(data.vehicles) ? data.vehicles : [];
+    populateMakes();
+    applyFilters(true);
+
+    if (data.updated_at) {
+      const date = new Date(data.updated_at);
+      status.textContent = `Inventory checked ${date.toLocaleString()}. Contact Peyton to confirm availability.`;
+    } else {
+      status.textContent = 'Contact Peyton to confirm current availability.';
+    }
+    if (data.errors && data.errors.length) {
+      status.textContent += ' Some dealership details may be temporarily unavailable.';
+    }
+  } catch (error) {
+    status.textContent = 'Current inventory could not be loaded. Contact Peyton directly for availability.';
+    state.all = [];
+    state.filtered = [];
+    renderVehicles();
+  }
+}
+
+['searchInput','conditionFilter','makeFilter','priceFilter','sortFilter'].forEach(id => {
+  $(id).addEventListener(id === 'searchInput' ? 'input' : 'change', () => applyFilters(true));
+});
+$('loadMoreButton').addEventListener('click', () => {
+  state.visibleLimit += 60;
+  renderVehicles();
+});
+loadInventory();
+'''
 
 PERSON = {
     "name": "Peyton Gaskins",
@@ -53,6 +256,9 @@ SITEMAP_SLUG_RE = re.compile(
 CACHE_TTL_SECONDS = int(os.getenv("INVENTORY_CACHE_SECONDS", "1800"))
 DIRECT_SITEMAP_TIMEOUT_SECONDS = int(os.getenv("INVENTORY_DIRECT_TIMEOUT", "7"))
 READER_TIMEOUT_SECONDS = int(os.getenv("INVENTORY_READER_TIMEOUT", "18"))
+DETAIL_TIMEOUT_SECONDS = int(os.getenv("INVENTORY_DETAIL_TIMEOUT", "9"))
+MAX_LISTING_PAGES = int(os.getenv("INVENTORY_MAX_LISTING_PAGES", "100"))
+DETAIL_WORKERS = int(os.getenv("INVENTORY_DETAIL_WORKERS", "12"))
 
 _cache_lock = threading.Lock()
 _cache = {"timestamp": 0.0, "payload": None}
@@ -77,6 +283,7 @@ class Vehicle:
     url: str
     dealer: str
     source_domain: str
+    images: list[str] = field(default_factory=list)
 
 
 MAKE_FORMAT = {
@@ -133,6 +340,32 @@ def parse_make(tokens: list[str]) -> tuple[str, int]:
     return MAKE_FORMAT.get(lowered[0], pretty_word(tokens[0])), 1
 
 
+EXTRA_TITLE_PHRASES = [
+    r"front wheel drive", r"rear wheel drive", r"all wheel drive", r"four wheel drive",
+    r"4 wheel drive", r"2 wheel drive", r"crew cab", r"double cab", r"extended cab",
+    r"regular cab", r"quad cab", r"supercrew", r"super cab", r"mega cab",
+    r"extended wheelbase", r"short wheelbase", r"sport utility", r"4 dr", r"2 dr",
+    r"awd", r"fwd", r"rwd", r"4wd", r"2wd",
+]
+
+
+def clean_display_title(title: str) -> str:
+    text = html_lib.unescape(title or "")
+    text = re.sub(r"\s+", " ", text).strip(" -|,")
+    text = re.sub(r"^(?:new|used|pre[- ]owned(?:\s*/\s*used)?|carbravo|certified pre[- ]owned|cadillac certified pre[- ]owned)\s+", "", text, flags=re.I)
+    text = re.sub(r"\s+(?:MSRP|Internet Price|Sale Price|Final Price|Market Value)\s*\$.*$", "", text, flags=re.I)
+    for phrase in EXTRA_TITLE_PHRASES:
+        text = re.sub(rf"\b{phrase}\b", " ", text, flags=re.I)
+    # Dealer slugs often end with generic body-style words after drivetrain/cab wording.
+    # Preserve Hummer EV SUV because SUV is part of that model name.
+    if not re.search(r"\bHummer EV SUV$", text, flags=re.I):
+        text = re.sub(r"\s+SUV$", "", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip(" -|,")
+    # Collapse adjacent duplicates that can remain after drivetrain words are removed.
+    text = re.sub(r"\b([A-Za-z0-9.]+)\s+\1\b", r"\1", text, flags=re.I)
+    return text
+
+
 def humanize_vehicle_body(body: str) -> tuple[str, str, str, str, str]:
     body = unquote(body).replace("\\_", "-").replace("_", "-")
     raw_tokens = [t for t in body.split("-") if t]
@@ -143,9 +376,17 @@ def humanize_vehicle_body(body: str) -> tuple[str, str, str, str, str]:
     make, used = parse_make(remaining)
     descriptor_tokens = remaining[used:]
     descriptor = " ".join(pretty_word(t) for t in descriptor_tokens)
-    model = " ".join(pretty_word(t) for t in descriptor_tokens[:2]) if descriptor_tokens else ""
-    trim = " ".join(pretty_word(t) for t in descriptor_tokens[2:]) if len(descriptor_tokens) > 2 else ""
-    core_title = " ".join(x for x in (year, make, descriptor) if x)
+    raw_title = " ".join(x for x in (year, make, descriptor) if x)
+    core_title = clean_display_title(raw_title)
+
+    # Model/trim are best-effort search fields. The customer-facing title is the cleaned title above.
+    after_make = core_title
+    prefix = " ".join(x for x in (year, make) if x).strip()
+    if prefix and after_make.lower().startswith(prefix.lower()):
+        after_make = after_make[len(prefix):].strip()
+    clean_tokens = after_make.split()
+    model = " ".join(clean_tokens[:2]) if clean_tokens else ""
+    trim = " ".join(clean_tokens[2:]) if len(clean_tokens) > 2 else ""
     return year, make, model, trim, core_title
 
 
@@ -194,7 +435,7 @@ def vehicle_from_url(url: str, source: dict) -> Vehicle | None:
         dealer = "Jim Hudson Buick GMC"
 
     return Vehicle(
-        title=f"{prefix} {core_title}".strip(),
+        title=core_title,
         year=year,
         make=make,
         model=model,
@@ -211,6 +452,7 @@ def vehicle_from_url(url: str, source: dict) -> Vehicle | None:
         url=clean_url,
         dealer=dealer,
         source_domain=source["domain"],
+        images=[],
     )
 
 
@@ -249,14 +491,240 @@ def fetch_sitemap(source: dict) -> tuple[list[Vehicle], str, str | None]:
     return [], "unavailable", last_error
 
 
+PRICE_PATTERNS = [
+    ("Internet Price", re.compile(r"Internet Price\s*\$\s*([\d,]+)", re.I)),
+    ("Sale Price", re.compile(r"Sale Price\s*\$\s*([\d,]+)", re.I)),
+    ("Final Price", re.compile(r"Final Price\s*\$\s*([\d,]+)", re.I)),
+    ("Price", re.compile(r"(?:^|\s)Price\s*\$\s*([\d,]+)", re.I)),
+    ("MSRP", re.compile(r"MSRP\s*\$\s*([\d,]+)", re.I)),
+    ("Market Value", re.compile(r"Market Value\s*\$\s*([\d,]+)", re.I)),
+]
+
+
+def parse_int(value: str | None) -> int | None:
+    if not value:
+        return None
+    digits = re.sub(r"[^0-9]", "", value)
+    return int(digits) if digits else None
+
+
+def find_price(text: str) -> tuple[int | None, str]:
+    for label, pattern in PRICE_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            return parse_int(match.group(1)), label
+    return None, "Contact for Price"
+
+
+def collect_image_urls(node) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    candidates = []
+    for img in node.find_all("img") if hasattr(node, "find_all") else []:
+        for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+            if img.get(attr):
+                candidates.append(img.get(attr))
+        for attr in ("data-srcset", "srcset"):
+            value = img.get(attr)
+            if value:
+                candidates.extend(part.strip().split(" ")[0] for part in value.split(","))
+    if hasattr(node, "find_all"):
+        for source in node.find_all("source"):
+            value = source.get("srcset") or source.get("data-srcset")
+            if value:
+                candidates.extend(part.strip().split(" ")[0] for part in value.split(","))
+        for meta in node.find_all("meta"):
+            if (meta.get("property") or "").lower() in {"og:image", "og:image:url"} and meta.get("content"):
+                candidates.append(meta.get("content"))
+    raw_blob = str(node)
+    candidates.extend(re.findall(r"https?://[^\s\"'<>]+", raw_blob))
+    for raw in candidates:
+        url = html_lib.unescape(str(raw or "")).strip()
+        if not url or url.startswith("data:") or not url.startswith(("http://", "https://")):
+            continue
+        low = url.lower()
+        if not any(host in low for host in ("vehicle-images.carscommerce.inc", "vini.gm.com", "cgi.gmc.com", "images.cars.com")):
+            continue
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
+def title_from_node(node, fallback: str) -> str:
+    if hasattr(node, "find_all"):
+        for tag in node.find_all(["h1", "h2", "h3", "h4"]):
+            text = " ".join(tag.stripped_strings)
+            if re.search(r"\b(?:19|20)\d{2}\b", text):
+                return clean_display_title(text)
+    return clean_display_title(fallback)
+
+
+def detail_vehicle_from_html(html: str, base: Vehicle) -> Vehicle:
+    soup = BeautifulSoup(html or "", "html.parser")
+    text = " ".join(soup.stripped_strings)
+    title = title_from_node(soup, base.title)
+    vin_match = VIN_RE.search(text)
+    stock_match = re.search(r"\bStock\s*:?\s*([A-Z0-9-]{2,20})\b", text, re.I)
+    mileage_match = re.search(r"\b(?:Mileage|Odometer)\s*:?\s*([\d,]{1,10})\s*(?:miles?)?\b", text, re.I)
+    price, price_label = find_price(text)
+    images = collect_image_urls(soup)
+
+    # Keep year/make from the sitemap URL, but improve model/trim search text from the shorter page heading.
+    short = clean_display_title(title)
+    after_prefix = short
+    prefix = " ".join(x for x in (base.year, base.make) if x).strip()
+    if prefix and after_prefix.lower().startswith(prefix.lower()):
+        after_prefix = after_prefix[len(prefix):].strip()
+    tokens = after_prefix.split()
+    model = " ".join(tokens[:2]) if tokens else base.model
+    trim = " ".join(tokens[2:]) if len(tokens) > 2 else (base.trim if len(tokens) < 2 else "")
+
+    return Vehicle(
+        title=short or base.title,
+        year=base.year,
+        make=base.make,
+        model=model or base.model,
+        trim=trim,
+        condition=base.condition,
+        condition_label=base.condition_label,
+        warranty=base.warranty,
+        price=price,
+        price_label=price_label if price is not None else base.price_label,
+        mileage=parse_int(mileage_match.group(1)) if mileage_match else None,
+        stock=stock_match.group(1).upper() if stock_match else "",
+        vin=(vin_match.group(0).upper() if vin_match else base.vin),
+        image=images[0] if images else "",
+        url=base.url,
+        dealer=base.dealer,
+        source_domain=base.source_domain,
+        images=images,
+    )
+
+
+def fetch_vehicle_detail(vehicle: Vehicle) -> Vehicle:
+    s = session()
+    attempts = [
+        (vehicle.url, DETAIL_TIMEOUT_SECONDS),
+        ("https://r.jina.ai/" + vehicle.url, READER_TIMEOUT_SECONDS),
+    ]
+    for target, timeout_seconds in attempts:
+        try:
+            response = s.get(target, timeout=timeout_seconds)
+            response.raise_for_status()
+            detail = detail_vehicle_from_html(response.text, vehicle)
+            if detail.image or detail.price is not None or detail.stock or detail.mileage is not None or detail.title != vehicle.title:
+                return detail
+        except requests.RequestException:
+            continue
+    return vehicle
+
+
+def card_vehicle_from_anchor(anchor, source: dict) -> Vehicle | None:
+    href = anchor.get("href") or ""
+    if "/inventory/" not in href:
+        return None
+    if href.startswith("/"):
+        href = source["domain"] + href
+    base = vehicle_from_url(href, source)
+    if base is None:
+        return None
+
+    card = anchor
+    for parent in anchor.parents:
+        card = parent
+        text = " ".join(parent.stripped_strings)
+        if base.vin in text or re.search(r"\bVIN\s*:?", text, re.I):
+            break
+        if getattr(parent, "name", "") in {"body", "html"}:
+            card = anchor.parent or anchor
+            break
+
+    text = " ".join(card.stripped_strings) if hasattr(card, "stripped_strings") else ""
+    title = title_from_node(card, base.title)
+    vin_match = VIN_RE.search(text)
+    stock_match = re.search(r"\bStock\s*:?\s*([A-Z0-9-]{2,20})\b", text, re.I)
+    mileage_match = re.search(r"\b(?:Mileage|Odometer)\s*:?\s*([\d,]{1,10})\s*(?:miles?)?\b", text, re.I)
+    price, price_label = find_price(text)
+    images = collect_image_urls(card)
+
+    return Vehicle(
+        title=title or base.title,
+        year=base.year,
+        make=base.make,
+        model=base.model,
+        trim=base.trim,
+        condition=base.condition,
+        condition_label=base.condition_label,
+        warranty=base.warranty,
+        price=price,
+        price_label=price_label if price is not None else base.price_label,
+        mileage=parse_int(mileage_match.group(1)) if mileage_match else None,
+        stock=stock_match.group(1).upper() if stock_match else "",
+        vin=(vin_match.group(0).upper() if vin_match else base.vin),
+        image=images[0] if images else "",
+        url=base.url,
+        dealer=base.dealer,
+        source_domain=base.source_domain,
+        images=images,
+    )
+
+
+def fetch_listing_feed(source: dict, path: str) -> tuple[list[Vehicle], str | None]:
+    s = session()
+    rows: list[Vehicle] = []
+    seen_vins: set[str] = set()
+    last_error = None
+    for page in range(1, MAX_LISTING_PAGES + 1):
+        url = f"{source['domain']}{path}?_p={page}"
+        try:
+            response = s.get(url, timeout=DETAIL_TIMEOUT_SECONDS)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            last_error = type(exc).__name__
+            break
+        soup = BeautifulSoup(response.text, "html.parser")
+        page_rows: list[Vehicle] = []
+        page_seen: set[str] = set()
+        for anchor in soup.find_all("a", href=True):
+            href = anchor.get("href") or ""
+            if "/inventory/" not in href:
+                continue
+            vehicle = card_vehicle_from_anchor(anchor, source)
+            if vehicle is None or not vehicle.vin or vehicle.vin in page_seen:
+                continue
+            page_seen.add(vehicle.vin)
+            page_rows.append(vehicle)
+        new_rows = [v for v in page_rows if v.vin not in seen_vins]
+        if not new_rows:
+            break
+        rows.extend(new_rows)
+        seen_vins.update(v.vin for v in new_rows)
+    return rows, last_error
+
+
 def merge_vehicle(existing: Vehicle, incoming: Vehicle) -> Vehicle:
     fields = asdict(existing)
     incoming_fields = asdict(incoming)
 
-    # Fill missing card details such as verified price/photo/stock when available.
+    # Fill missing card/detail information such as price, photo, mileage and stock.
     for key, value in incoming_fields.items():
+        if key == "images":
+            combined = []
+            for image_url in list(fields.get("images") or []) + list(value or []):
+                if image_url and image_url not in combined:
+                    combined.append(image_url)
+            fields["images"] = combined
+            if not fields.get("image") and combined:
+                fields["image"] = combined[0]
+            continue
         if fields.get(key) in (None, "", 0) and value not in (None, "", 0):
             fields[key] = value
+
+    incoming_title = clean_display_title(incoming.title)
+    existing_title = clean_display_title(existing.title)
+    if incoming_title and (len(incoming_title) < len(existing_title) or incoming.price is not None or incoming.image):
+        fields["title"] = incoming_title
 
     priority = {"new": 1, "preowned": 2, "certified": 3}
     if priority.get(incoming.condition, 0) > priority.get(existing.condition, 0):
@@ -300,18 +768,28 @@ def refresh_inventory() -> dict:
     errors: list[str] = []
     source_modes: dict[str, str] = {}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {executor.submit(fetch_sitemap, source): source for source in SOURCES}
-        for future in concurrent.futures.as_completed(futures):
-            source = futures[future]
+    # Sitemaps guarantee broad inventory coverage. Listing pages add price, mileage, stock and dealership photos in bulk.
+    jobs = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        for source in SOURCES:
+            jobs.append(("sitemap", source, None, executor.submit(fetch_sitemap, source)))
+            jobs.append(("listing", source, "/new-vehicles/", executor.submit(fetch_listing_feed, source, "/new-vehicles/")))
+            jobs.append(("listing", source, "/used-vehicles/", executor.submit(fetch_listing_feed, source, "/used-vehicles/")))
+
+        for kind, source, path, future in jobs:
             try:
-                vehicles, mode, error = future.result()
-                raw.extend(vehicles)
-                source_modes[source["dealer"]] = mode
-                if error and not vehicles:
-                    errors.append(f"{source['dealer']} inventory sitemap unavailable")
+                if kind == "sitemap":
+                    vehicles, mode, error = future.result()
+                    raw.extend(vehicles)
+                    source_modes[source["dealer"]] = mode
+                    if error and not vehicles:
+                        errors.append(f"{source['dealer']} inventory sitemap unavailable")
+                else:
+                    vehicles, error = future.result()
+                    raw.extend(vehicles)
+                    if error and not vehicles:
+                        errors.append(f"{source['dealer']} {path.strip('/')} details temporarily unavailable")
             except Exception as exc:
-                source_modes[source["dealer"]] = "unavailable"
                 errors.append(f"{source['dealer']}: {type(exc).__name__}")
 
     deduped: dict[str, Vehicle] = {}
@@ -322,18 +800,27 @@ def refresh_inventory() -> dict:
         else:
             deduped[key] = vehicle
 
-    # Preserve verified card-level details for known VINs only if they are still in today's sitemap.
+    # Preserve verified snapshot details only for VINs that are still in the current live inventory.
     if deduped:
         for known in KNOWN_DETAILS:
             if known.vin and known.vin in deduped:
                 deduped[known.vin] = merge_vehicle(deduped[known.vin], known)
     else:
-        # Emergency-only fallback. The normal path is the full live sitemap inventory above.
         for known in KNOWN_DETAILS:
             deduped[known.vin or known.url] = known
-        errors.append("Full live inventory feeds unavailable; showing a limited emergency snapshot")
+        errors.append("Live inventory feeds unavailable; showing a limited emergency snapshot")
+
+    # Missing card details are enriched lazily for visible vehicles through /api/vehicle-detail.
+    # This keeps the full inventory list fast even when there are hundreds of vehicles.
 
     vehicles = list(deduped.values())
+    for vehicle in vehicles:
+        vehicle.title = clean_display_title(vehicle.title or " ".join(x for x in (vehicle.year, vehicle.make, vehicle.model, vehicle.trim) if x))
+        if vehicle.images and not vehicle.image:
+            vehicle.image = vehicle.images[0]
+        if vehicle.image and vehicle.image not in vehicle.images:
+            vehicle.images.insert(0, vehicle.image)
+
     condition_order = {"new": 0, "certified": 1, "preowned": 2}
     vehicles.sort(key=lambda v: (
         condition_order.get(v.condition, 9),
@@ -354,7 +841,9 @@ def refresh_inventory() -> dict:
         "errors": errors,
         "source_modes": source_modes,
         "rules": {
-            "stock_filter": "none - all vehicles from both dealer inventory sitemaps are included",
+            "coverage": "all vehicles discovered from both dealer inventory sitemaps",
+            "details": "price, mileage, stock and available dealership photos are merged from inventory cards and vehicle detail pages",
+            "title_format": "Year + Make + Model + Trim only",
             "categories": ["New", "Certified Pre-Owned", "Pre-Owned / Used"],
             "deduplication": "VIN",
             "carbravo_warranty": "12-month / 12,000-mile warranty when CarBravo status is verified",
@@ -399,6 +888,39 @@ def inventory_api():
         return jsonify(get_inventory(force=force))
     except Exception as exc:
         return jsonify({"updated_at": None, "count": 0, "counts": {}, "vehicles": [], "errors": [type(exc).__name__]}), 503
+
+
+@app.route("/api/vehicle-detail")
+def vehicle_detail_api():
+    vin = (request.args.get("vin") or "").strip().upper()
+    if not VIN_RE.fullmatch(vin):
+        return jsonify({"error": "invalid VIN"}), 400
+
+    payload = get_inventory()
+    row = next((item for item in payload.get("vehicles", []) if item.get("vin") == vin), None)
+    if row is None:
+        return jsonify({"error": "vehicle not found"}), 404
+
+    try:
+        base = Vehicle(**row)
+        enriched = merge_vehicle(base, fetch_vehicle_detail(base))
+        enriched.title = clean_display_title(enriched.title)
+        if enriched.images and not enriched.image:
+            enriched.image = enriched.images[0]
+        if enriched.image and enriched.image not in enriched.images:
+            enriched.images.insert(0, enriched.image)
+        updated = asdict(enriched)
+
+        with _cache_lock:
+            cached = _cache.get("payload")
+            if cached:
+                for i, item in enumerate(cached.get("vehicles", [])):
+                    if item.get("vin") == vin:
+                        cached["vehicles"][i] = updated
+                        break
+        return jsonify({"vehicle": updated})
+    except Exception as exc:
+        return jsonify({"vehicle": row, "warning": type(exc).__name__})
 
 
 @app.route("/health")
